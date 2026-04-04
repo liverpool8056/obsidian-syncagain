@@ -27,6 +27,7 @@ export class FileTracker {
 
   markDirty(file: TAbstractFile): void {
     if (!(file instanceof TFile)) return;
+    if (file.path.startsWith(".trash/")) return;
     if (this.suppressOnce.delete(file.path)) return;
     this.dirtyFiles.set(file.path, {
       path: file.path,
@@ -35,6 +36,7 @@ export class FileTracker {
   }
 
   markDirtyByPath(path: string): void {
+    if (path.startsWith(".trash/")) return;
     this.dirtyFiles.set(path, { path, modifiedAt: Date.now() });
   }
 
@@ -71,6 +73,11 @@ export class FileTracker {
 
   markDeletedByPath(path: string): void {
     this.pendingDeletions.add(path);
+  }
+
+  /** Returns true if the path is currently queued for upload. */
+  hasPendingUpload(path: string): boolean {
+    return this.dirtyFiles.has(path);
   }
 
   get pendingCount(): number {
