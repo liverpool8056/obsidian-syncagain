@@ -44,7 +44,7 @@ export default class SyncAgainPlugin extends Plugin {
     this.eventListener = new EventListener(this.api, this.settings.clientId, (event) => {
       if (event.key) {
         if (event.event === "file_changed") {
-          this.syncManager.syncKey(event.key);
+          void this.syncManager.syncKey(event.key);
         } else if (event.event === "file_deleted") {
           // Let the next full sync cycle handle the deletion.
         }
@@ -58,7 +58,7 @@ export default class SyncAgainPlugin extends Plugin {
       const email = params["email"] ?? "";
 
       if (!token || !userId) {
-        new Notice("[SyncAgain] Auth callback missing token or user_id.");
+        new Notice("Auth callback is missing token or user ID.");
         return;
       }
 
@@ -68,7 +68,7 @@ export default class SyncAgainPlugin extends Plugin {
       await this.saveSettings();
 
       this.api.setToken(token);
-      new Notice(`[SyncAgain] Signed in as ${email || userId}`);
+      new Notice(`Signed in as ${email || userId}`);
 
       if (this.settings.syncEnabled && this.settings.serverUrl) {
         this.restartSync();
@@ -103,12 +103,10 @@ export default class SyncAgainPlugin extends Plugin {
 
     this.settingTab = new SyncAgainSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    console.log("[SyncAgain] Plugin loaded.");
   }
 
   async onunload(): Promise<void> {
     this.stopSync();
-    console.log("[SyncAgain] Plugin unloaded.");
   }
 
   // ── Sync lifecycle ────────────────────────────────────────────────────────
@@ -117,11 +115,9 @@ export default class SyncAgainPlugin extends Plugin {
     if (!this.settings.authToken) return;
     this.stopSync();
     const intervalMs = this.settings.syncIntervalMinutes * 60 * 1000;
-    this.syncManager.sync();
-    this.syncIntervalId = window.setInterval(() => this.syncManager.sync(), intervalMs);
-    this.eventListener.start().catch((err) =>
-      console.error("[SyncAgain] EventListener start error:", err),
-    );
+    void this.syncManager.sync();
+    this.syncIntervalId = window.setInterval(() => { void this.syncManager.sync(); }, intervalMs);
+    this.eventListener.start();
   }
 
   stopSync(): void {
@@ -150,10 +146,10 @@ export default class SyncAgainPlugin extends Plugin {
   private handleAuthFailure(): void {
     this.settings.authToken = "";
     this.settings.userId = "";
-    this.saveSettings();
+    void this.saveSettings();
     this.stopSync();
     new Notice(
-      "[SyncAgain] Session expired or not signed in. Please sign in again in the settings.",
+      "Session expired or not signed in. Please sign in again in the SyncAgain settings.",
       8000,
     );
   }

@@ -1,3 +1,4 @@
+import { requestUrl } from "obsidian";
 import { RemoteFileEntry } from "./metadata";
 
 export interface LockEntry {
@@ -58,26 +59,25 @@ export class ApiClient {
     email: string,
     password: string,
   ): Promise<{ token: string; userId: string; userEmail: string }> {
-    const res = await fetch(`${this.serverUrl}/api/auth/login`, {
+    const res = await requestUrl({
+      url: `${this.serverUrl}/api/auth/login`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, client_id: this.clientId }),
+      throw: false,
     });
+
+    if (res.status >= 200 && res.status < 300) {
+      const data = res.json as { token: string; user_id: string; email: string };
+      this.token = data.token;
+      return { token: data.token, userId: data.user_id, userEmail: data.email };
+    }
 
     let msg: string;
     try {
-      const data = await res.json();
-      if (res.ok) {
-        this.token = data.token as string;
-        return {
-          token: data.token as string,
-          userId: data.user_id as string,
-          userEmail: data.email as string,
-        };
-      }
-      msg = (data as { error?: string }).error ?? res.statusText;
+      msg = (res.json as { error?: string }).error ?? String(res.status);
     } catch {
-      msg = res.statusText;
+      msg = String(res.status);
     }
     throw new ApiError(res.status, msg);
   }
@@ -87,7 +87,7 @@ export class ApiClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: BodyInit,
+    body?: string,
     extraHeaders?: Record<string, string>,
   ): Promise<T> {
     if (!this.token) {
@@ -95,13 +95,15 @@ export class ApiClient {
       throw new ApiError(401, "Not signed in. Please sign in in the SyncAgain settings.");
     }
 
-    const res = await fetch(`${this.serverUrl}${path}`, {
+    const res = await requestUrl({
+      url: `${this.serverUrl}${path}`,
       method,
       headers: {
         Authorization: `Bearer ${this.token}`,
         ...extraHeaders,
       },
       body,
+      throw: false,
     });
 
     if (res.status === 401) {
@@ -110,14 +112,14 @@ export class ApiClient {
       throw new ApiError(401, "Session expired. Please sign in again in the SyncAgain settings.");
     }
 
-    if (!res.ok) {
-      let msg = await res.text();
-      try { msg = (JSON.parse(msg) as { error?: string }).error ?? msg; } catch { /* ignore */ }
+    if (res.status < 200 || res.status >= 300) {
+      let msg = res.text;
+      try { msg = (res.json as { error?: string }).error ?? msg; } catch { /* ignore */ }
       throw new ApiError(res.status, msg);
     }
 
     if (res.status === 204) return undefined as unknown as T;
-    return res.json() as Promise<T>;
+    return res.json as T;
   }
 
   // ── Files ────────────────────────────────────────────────────────────────
@@ -132,17 +134,18 @@ export class ApiClient {
       this.onAuthFailure?.();
       throw new ApiError(401, "Not signed in.");
     }
-    const res = await fetch(
-      `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
-      { headers: { Authorization: `Bearer ${this.token}` } },
-    );
+    const res = await requestUrl({
+      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
+      headers: { Authorization: `Bearer ${this.token}` },
+      throw: false,
+    });
     if (res.status === 401) {
       this.token = null;
       this.onAuthFailure?.();
       throw new ApiError(401, "Session expired. Please sign in again.");
     }
-    if (!res.ok) throw new ApiError(res.status, `Download failed for '${key}'`);
-    return res.arrayBuffer();
+    if (res.status < 200 || res.status >= 300) throw new ApiError(res.status, `Download failed for '${key}'`);
+    return res.arrayBuffer;
   }
 
   /** Upload `data` to `key`. The caller must hold the lock before calling this. */
@@ -151,23 +154,43 @@ export class ApiClient {
       this.onAuthFailure?.();
       throw new ApiError(401, "Not signed in.");
     }
-    const form = new FormData();
-    form.append("key", key);
-    form.append("file", new Blob([data], { type: contentType }), key);
 
-    const res = await fetch(`${this.serverUrl}/api/files/upload`, {
+    // Manually construct multipart/form-data body since requestUrl doesn't accept FormData.
+    const boundary = `----SyncAgainBoundary${Date.now()}`;
+    const enc = new TextEncoder();
+    const keyPart = enc.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="key"\r\n\r\n${key}\r\n`,
+    );
+    const fileHeader = enc.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${key}"\r\nContent-Type: ${contentType}\r\n\r\n`,
+    );
+    const footer = enc.encode(`\r\n--${boundary}--\r\n`);
+    const fileBytes = new Uint8Array(data);
+    const body = new Uint8Array(keyPart.length + fileHeader.length + fileBytes.length + footer.length);
+    body.set(keyPart, 0);
+    body.set(fileHeader, keyPart.length);
+    body.set(fileBytes, keyPart.length + fileHeader.length);
+    body.set(footer, keyPart.length + fileHeader.length + fileBytes.length);
+
+    const res = await requestUrl({
+      url: `${this.serverUrl}/api/files/upload`,
       method: "POST",
-      headers: { Authorization: `Bearer ${this.token}` },
-      body: form,
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body.buffer,
+      throw: false,
     });
+
     if (res.status === 401) {
       this.token = null;
       this.onAuthFailure?.();
       throw new ApiError(401, "Session expired. Please sign in again.");
     }
-    if (!res.ok) {
-      let msg = await res.text();
-      try { msg = (JSON.parse(msg) as { error?: string }).error ?? msg; } catch { /* ignore */ }
+    if (res.status < 200 || res.status >= 300) {
+      let msg = res.text;
+      try { msg = (res.json as { error?: string }).error ?? msg; } catch { /* ignore */ }
       throw new ApiError(res.status, msg);
     }
   }

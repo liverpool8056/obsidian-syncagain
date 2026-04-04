@@ -114,7 +114,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           btn.setButtonText("Sign up").onClick(() => {
             const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
             if (!base) {
-              new Notice("[SyncAgain] Set the Server URL first.");
+              new Notice("Set the server URL first.");
               return;
             }
             const url = `${base}/register?client_id=${this.plugin.settings.clientId}`;
@@ -157,15 +157,15 @@ export class SyncAgainSettingTab extends PluginSettingTab {
               .setDisabled(this.signingIn)
               .onClick(async () => {
                 if (!this.plugin.settings.serverUrl) {
-                  new Notice("[SyncAgain] Set the Server URL first.");
+                  new Notice("Set the server URL first.");
                   return;
                 }
                 if (!this.emailInput) {
-                  new Notice("[SyncAgain] Please enter your email.");
+                  new Notice("Please enter your email.");
                   return;
                 }
                 if (!this.passwordInput) {
-                  new Notice("[SyncAgain] Please enter your password.");
+                  new Notice("Please enter your password.");
                   return;
                 }
 
@@ -182,7 +182,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
                   this.plugin.settings.userEmail = result.userEmail;
                   await this.plugin.saveSettings();
 
-                  new Notice(`[SyncAgain] Signed in as ${result.userEmail}`);
+                  new Notice(`Signed in as ${result.userEmail}`);
                   this.passwordInput = "";
                   this.signingIn = false;
                   this.showSignInForm = false;
@@ -193,7 +193,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
                   this.display();
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  new Notice(`[SyncAgain] Sign in failed: ${msg}`);
+                  new Notice(`Sign-in failed: ${msg}`);
                   this.signingIn = false;
                   btn.setButtonText("Confirm").setDisabled(false);
                 }
@@ -266,7 +266,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
       const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
       trashContainer.createEl("p", { text: "Loading…" });
-      this.loadTrashView(trashContainer);
+      void this.loadTrashView(trashContainer);
     }
 
     // ── Info ────────────────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
     let files: RemoteFileEntry[];
     try {
       files = await this.plugin.api.listTrash();
-    } catch (err) {
+    } catch {
       container.empty();
       container.createEl("p", { text: "Failed to load trash. Is the server reachable?" });
       return;
@@ -322,15 +322,15 @@ export class SyncAgainSettingTab extends PluginSettingTab {
                   await this.plugin.api.recoverFromTrash(originalPath);
                   // Server has moved _delete/<key> back to <key>; download it locally.
                   await this.plugin.syncManager.recoverKey(originalPath);
-                  new Notice(`[SyncAgain] Recovered: ${filename}`);
+                  new Notice(`Recovered: ${filename}`);
                 } finally {
                   try { await this.plugin.api.releaseLocks([originalPath]); } catch { /* best-effort */ }
                 }
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                new Notice(`[SyncAgain] Recovery failed: ${msg}`);
+                new Notice(`Recovery failed: ${msg}`);
               }
-              this.loadTrashView(container);
+              void this.loadTrashView(container);
             }),
         )
         .addButton((btn) =>
@@ -341,12 +341,12 @@ export class SyncAgainSettingTab extends PluginSettingTab {
               new ConfirmDeleteModal(this.app, filename, async () => {
                 try {
                   await this.plugin.api.deleteFromTrash(originalPath);
-                  new Notice(`[SyncAgain] Permanently deleted: ${filename}`);
+                  new Notice(`Permanently deleted: ${filename}`);
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  new Notice(`[SyncAgain] Delete failed: ${msg}`);
+                  new Notice(`Delete failed: ${msg}`);
                 }
-                this.loadTrashView(container);
+                void this.loadTrashView(container);
               }).open();
             }),
         );

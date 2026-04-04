@@ -98,7 +98,6 @@ export class SyncManager {
     try {
       await this.downloadKey(key);
       await this.saveState();
-      console.log(`[SyncAgain] Recovered: ${key}`);
     } catch (err) {
       console.error(`[SyncAgain] Failed to download recovered key '${key}':`, err);
       throw err;
@@ -139,7 +138,6 @@ export class SyncManager {
       this.detectOfflineChanges();
       this.startupScanDone = true;
     }
-    console.log("[SyncAgain] Sync cycle started.");
 
     // Step 1 — handle locally deleted files.
     const deletedPaths = this.tracker.drainPendingDeletions();
@@ -177,7 +175,6 @@ export class SyncManager {
     await this.reconcileRemote(remoteFiles);
 
     await this.saveState();
-    console.log("[SyncAgain] Sync cycle complete.");
   }
 
   // ── Upload ─────────────────────────────────────────────────────────────────
@@ -211,7 +208,6 @@ export class SyncManager {
     try {
       await this.api.uploadFile(path, data);
       this.state.files[path] = { md5: hash, syncedAt: Date.now(), mtime: file.stat.mtime };
-      console.log(`[SyncAgain] Uploaded: ${path}`);
     } finally {
       // Server releases the lock on successful upload, but release explicitly
       // here in case of an upload error to avoid holding stale locks.
@@ -270,7 +266,6 @@ export class SyncManager {
       this.state.deletedFiles.push(path);
     }
     delete this.state.files[path];
-    console.log(`[SyncAgain] Deletion handled (${this.deletionStrategy}): ${path}`);
   }
 
   // ── Download / reconcile ──────────────────────────────────────────────────
@@ -376,7 +371,6 @@ export class SyncManager {
       syncedAt: Date.now(),
       mtime: writtenFile?.stat.mtime ?? Date.now(),
     };
-    console.log(`[SyncAgain] Downloaded: ${key}`);
   }
 
   private async deleteLocalFile(key: string): Promise<void> {
@@ -386,7 +380,6 @@ export class SyncManager {
       await this.vault.delete(file);
     }
     delete this.state.files[key];
-    console.log(`[SyncAgain] Deleted local: ${key}`);
   }
 
   private async ensureFolder(filePath: string): Promise<void> {

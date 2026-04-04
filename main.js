@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => SyncAgainPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -70,12 +70,15 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
           this.display();
         })
       );
+      new import_obsidian.Setting(containerEl).setName("User ID").setDesc("Your account ID on the server (read-only).").addText(
+        (text) => text.setValue(this.plugin.settings.userId).setDisabled(true)
+      );
     } else {
       new import_obsidian.Setting(containerEl).setName("Account").setDesc("Create a new account or sign in to an existing one.").addButton(
         (btn) => btn.setButtonText("Sign up").onClick(() => {
           const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
           if (!base) {
-            new import_obsidian.Notice("[SyncAgain] Set the Server URL first.");
+            new import_obsidian.Notice("Set the server URL first.");
             return;
           }
           const url = `${base}/register?client_id=${this.plugin.settings.clientId}`;
@@ -102,15 +105,15 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
         new import_obsidian.Setting(containerEl).addButton((btn) => {
           btn.setButtonText(this.signingIn ? "Signing in\u2026" : "Confirm").setCta().setDisabled(this.signingIn).onClick(async () => {
             if (!this.plugin.settings.serverUrl) {
-              new import_obsidian.Notice("[SyncAgain] Set the Server URL first.");
+              new import_obsidian.Notice("Set the server URL first.");
               return;
             }
             if (!this.emailInput) {
-              new import_obsidian.Notice("[SyncAgain] Please enter your email.");
+              new import_obsidian.Notice("Please enter your email.");
               return;
             }
             if (!this.passwordInput) {
-              new import_obsidian.Notice("[SyncAgain] Please enter your password.");
+              new import_obsidian.Notice("Please enter your password.");
               return;
             }
             this.signingIn = true;
@@ -124,7 +127,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
               this.plugin.settings.userId = result.userId;
               this.plugin.settings.userEmail = result.userEmail;
               await this.plugin.saveSettings();
-              new import_obsidian.Notice(`[SyncAgain] Signed in as ${result.userEmail}`);
+              new import_obsidian.Notice(`Signed in as ${result.userEmail}`);
               this.passwordInput = "";
               this.signingIn = false;
               this.showSignInForm = false;
@@ -134,7 +137,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
               this.display();
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian.Notice(`[SyncAgain] Sign in failed: ${msg}`);
+              new import_obsidian.Notice(`Sign-in failed: ${msg}`);
               this.signingIn = false;
               btn.setButtonText("Confirm").setDisabled(false);
             }
@@ -177,10 +180,10 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
       containerEl.createEl("h3", { text: "Trash" });
       const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
       trashContainer.createEl("p", { text: "Loading\u2026" });
-      this.loadTrashView(trashContainer);
+      void this.loadTrashView(trashContainer);
     }
     containerEl.createEl("h3", { text: "Info" });
-    new import_obsidian.Setting(containerEl).setName("Client ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
+    new import_obsidian.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
       (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
     );
   }
@@ -192,7 +195,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
     let files;
     try {
       files = await this.plugin.api.listTrash();
-    } catch (err) {
+    } catch (e) {
       container.empty();
       container.createEl("p", { text: "Failed to load trash. Is the server reachable?" });
       return;
@@ -213,7 +216,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
             try {
               await this.plugin.api.recoverFromTrash(originalPath);
               await this.plugin.syncManager.recoverKey(originalPath);
-              new import_obsidian.Notice(`[SyncAgain] Recovered: ${filename}`);
+              new import_obsidian.Notice(`Recovered: ${filename}`);
             } finally {
               try {
                 await this.plugin.api.releaseLocks([originalPath]);
@@ -222,21 +225,21 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            new import_obsidian.Notice(`[SyncAgain] Recovery failed: ${msg}`);
+            new import_obsidian.Notice(`Recovery failed: ${msg}`);
           }
-          this.loadTrashView(container);
+          void this.loadTrashView(container);
         })
       ).addButton(
         (btn) => btn.setButtonText("Delete").setWarning().onClick(() => {
           new ConfirmDeleteModal(this.app, filename, async () => {
             try {
               await this.plugin.api.deleteFromTrash(originalPath);
-              new import_obsidian.Notice(`[SyncAgain] Permanently deleted: ${filename}`);
+              new import_obsidian.Notice(`Permanently deleted: ${filename}`);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian.Notice(`[SyncAgain] Delete failed: ${msg}`);
+              new import_obsidian.Notice(`Delete failed: ${msg}`);
             }
-            this.loadTrashView(container);
+            void this.loadTrashView(container);
           }).open();
         })
       );
@@ -341,6 +344,7 @@ var FileTracker = class {
 var import_crypto = require("crypto");
 
 // src/api-client.ts
+var import_obsidian3 = require("obsidian");
 var ApiError = class extends Error {
   constructor(status, message) {
     super(message);
@@ -371,25 +375,23 @@ var ApiClient = class {
    */
   async loginWithCredentials(email, password) {
     var _a;
-    const res = await fetch(`${this.serverUrl}/api/auth/login`, {
+    const res = await (0, import_obsidian3.requestUrl)({
+      url: `${this.serverUrl}/api/auth/login`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, client_id: this.clientId })
+      body: JSON.stringify({ email, password, client_id: this.clientId }),
+      throw: false
     });
+    if (res.status >= 200 && res.status < 300) {
+      const data = res.json;
+      this.token = data.token;
+      return { token: data.token, userId: data.user_id, userEmail: data.email };
+    }
     let msg;
     try {
-      const data = await res.json();
-      if (res.ok) {
-        this.token = data.token;
-        return {
-          token: data.token,
-          userId: data.user_id,
-          userEmail: data.email
-        };
-      }
-      msg = (_a = data.error) != null ? _a : res.statusText;
+      msg = (_a = res.json.error) != null ? _a : String(res.status);
     } catch (e) {
-      msg = res.statusText;
+      msg = String(res.status);
     }
     throw new ApiError(res.status, msg);
   }
@@ -400,30 +402,32 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in. Please sign in in the SyncAgain settings.");
     }
-    const res = await fetch(`${this.serverUrl}${path}`, {
+    const res = await (0, import_obsidian3.requestUrl)({
+      url: `${this.serverUrl}${path}`,
       method,
       headers: {
         Authorization: `Bearer ${this.token}`,
         ...extraHeaders
       },
-      body
+      body,
+      throw: false
     });
     if (res.status === 401) {
       this.token = null;
       (_b = this.onAuthFailure) == null ? void 0 : _b.call(this);
       throw new ApiError(401, "Session expired. Please sign in again in the SyncAgain settings.");
     }
-    if (!res.ok) {
-      let msg = await res.text();
+    if (res.status < 200 || res.status >= 300) {
+      let msg = res.text;
       try {
-        msg = (_c = JSON.parse(msg).error) != null ? _c : msg;
+        msg = (_c = res.json.error) != null ? _c : msg;
       } catch (e) {
       }
       throw new ApiError(res.status, msg);
     }
     if (res.status === 204)
       return void 0;
-    return res.json();
+    return res.json;
   }
   // ── Files ────────────────────────────────────────────────────────────────
   async listFiles() {
@@ -436,18 +440,19 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in.");
     }
-    const res = await fetch(
-      `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
-      { headers: { Authorization: `Bearer ${this.token}` } }
-    );
+    const res = await (0, import_obsidian3.requestUrl)({
+      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
+      headers: { Authorization: `Bearer ${this.token}` },
+      throw: false
+    });
     if (res.status === 401) {
       this.token = null;
       (_b = this.onAuthFailure) == null ? void 0 : _b.call(this);
       throw new ApiError(401, "Session expired. Please sign in again.");
     }
-    if (!res.ok)
+    if (res.status < 200 || res.status >= 300)
       throw new ApiError(res.status, `Download failed for '${key}'`);
-    return res.arrayBuffer();
+    return res.arrayBuffer;
   }
   /** Upload `data` to `key`. The caller must hold the lock before calling this. */
   async uploadFile(key, data, contentType = "application/octet-stream") {
@@ -456,23 +461,50 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in.");
     }
-    const form = new FormData();
-    form.append("key", key);
-    form.append("file", new Blob([data], { type: contentType }), key);
-    const res = await fetch(`${this.serverUrl}/api/files/upload`, {
+    const boundary = `----SyncAgainBoundary${Date.now()}`;
+    const enc = new TextEncoder();
+    const keyPart = enc.encode(
+      `--${boundary}\r
+Content-Disposition: form-data; name="key"\r
+\r
+${key}\r
+`
+    );
+    const fileHeader = enc.encode(
+      `--${boundary}\r
+Content-Disposition: form-data; name="file"; filename="${key}"\r
+Content-Type: ${contentType}\r
+\r
+`
+    );
+    const footer = enc.encode(`\r
+--${boundary}--\r
+`);
+    const fileBytes = new Uint8Array(data);
+    const body = new Uint8Array(keyPart.length + fileHeader.length + fileBytes.length + footer.length);
+    body.set(keyPart, 0);
+    body.set(fileHeader, keyPart.length);
+    body.set(fileBytes, keyPart.length + fileHeader.length);
+    body.set(footer, keyPart.length + fileHeader.length + fileBytes.length);
+    const res = await (0, import_obsidian3.requestUrl)({
+      url: `${this.serverUrl}/api/files/upload`,
       method: "POST",
-      headers: { Authorization: `Bearer ${this.token}` },
-      body: form
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`
+      },
+      body: body.buffer,
+      throw: false
     });
     if (res.status === 401) {
       this.token = null;
       (_b = this.onAuthFailure) == null ? void 0 : _b.call(this);
       throw new ApiError(401, "Session expired. Please sign in again.");
     }
-    if (!res.ok) {
-      let msg = await res.text();
+    if (res.status < 200 || res.status >= 300) {
+      let msg = res.text;
       try {
-        msg = (_c = JSON.parse(msg).error) != null ? _c : msg;
+        msg = (_c = res.json.error) != null ? _c : msg;
       } catch (e) {
       }
       throw new ApiError(res.status, msg);
@@ -628,7 +660,6 @@ var SyncManager = class {
     try {
       await this.downloadKey(key);
       await this.saveState();
-      console.log(`[SyncAgain] Recovered: ${key}`);
     } catch (err) {
       console.error(`[SyncAgain] Failed to download recovered key '${key}':`, err);
       throw err;
@@ -668,7 +699,6 @@ var SyncManager = class {
       this.detectOfflineChanges();
       this.startupScanDone = true;
     }
-    console.log("[SyncAgain] Sync cycle started.");
     const deletedPaths = this.tracker.drainPendingDeletions();
     for (const path of deletedPaths) {
       try {
@@ -696,7 +726,6 @@ var SyncManager = class {
     const remoteFiles = await this.api.listFiles();
     await this.reconcileRemote(remoteFiles);
     await this.saveState();
-    console.log("[SyncAgain] Sync cycle complete.");
   }
   // ── Upload ─────────────────────────────────────────────────────────────────
   async uploadLocalFile(path) {
@@ -722,7 +751,6 @@ var SyncManager = class {
     try {
       await this.api.uploadFile(path, data);
       this.state.files[path] = { md5: hash, syncedAt: Date.now(), mtime: file.stat.mtime };
-      console.log(`[SyncAgain] Uploaded: ${path}`);
     } finally {
       try {
         await this.api.releaseLocks([path]);
@@ -777,7 +805,6 @@ var SyncManager = class {
       this.state.deletedFiles.push(path);
     }
     delete this.state.files[path];
-    console.log(`[SyncAgain] Deletion handled (${this.deletionStrategy}): ${path}`);
   }
   // ── Download / reconcile ──────────────────────────────────────────────────
   async reconcileRemote(remoteFiles) {
@@ -855,7 +882,6 @@ var SyncManager = class {
       syncedAt: Date.now(),
       mtime: (_b = writtenFile == null ? void 0 : writtenFile.stat.mtime) != null ? _b : Date.now()
     };
-    console.log(`[SyncAgain] Downloaded: ${key}`);
   }
   async deleteLocalFile(key) {
     const file = this.vault.getFileByPath(key);
@@ -864,7 +890,6 @@ var SyncManager = class {
       await this.vault.delete(file);
     }
     delete this.state.files[key];
-    console.log(`[SyncAgain] Deleted local: ${key}`);
   }
   async ensureFolder(filePath) {
     const parts = filePath.split("/");
@@ -890,9 +915,9 @@ var EventListener = class {
     this.stopped = false;
     this.retryTimeout = null;
   }
-  async start() {
+  start() {
     this.stopped = false;
-    await this.connect();
+    this.connect();
   }
   stop() {
     this.stopped = true;
@@ -902,7 +927,7 @@ var EventListener = class {
     }
     this.closeSource();
   }
-  async connect() {
+  connect() {
     if (this.stopped)
       return;
     try {
@@ -914,7 +939,6 @@ var EventListener = class {
       this.es = es;
       es.onopen = () => {
         this.retryMs = 1e3;
-        console.log("[SyncAgain] SSE connected.");
       };
       es.onerror = () => {
         es.close();
@@ -927,7 +951,6 @@ var EventListener = class {
           if (payload.client_id === this.ownClientId)
             return;
           if (payload.event === "file_changed" || payload.event === "file_deleted") {
-            console.log(`[SyncAgain] SSE event: ${payload.event} \u2014 ${payload.key}`);
             this.onRemoteChange(payload);
           }
         } catch (e) {
@@ -942,8 +965,8 @@ var EventListener = class {
   scheduleReconnect() {
     if (this.stopped)
       return;
-    this.retryTimeout = setTimeout(async () => {
-      await this.connect();
+    this.retryTimeout = setTimeout(() => {
+      this.connect();
     }, this.retryMs);
     this.retryMs = Math.min(this.retryMs * 2, this.maxRetryMs);
   }
@@ -956,7 +979,7 @@ var EventListener = class {
 };
 
 // src/main.ts
-var SyncAgainPlugin = class extends import_obsidian3.Plugin {
+var SyncAgainPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.syncIntervalId = null;
@@ -983,7 +1006,7 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
     this.eventListener = new EventListener(this.api, this.settings.clientId, (event) => {
       if (event.key) {
         if (event.event === "file_changed") {
-          this.syncManager.syncKey(event.key);
+          void this.syncManager.syncKey(event.key);
         } else if (event.event === "file_deleted") {
         }
       }
@@ -994,7 +1017,7 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
       const userId = params["user_id"];
       const email = (_a = params["email"]) != null ? _a : "";
       if (!token || !userId) {
-        new import_obsidian3.Notice("[SyncAgain] Auth callback missing token or user_id.");
+        new import_obsidian4.Notice("Auth callback is missing token or user ID.");
         return;
       }
       this.settings.authToken = token;
@@ -1002,7 +1025,7 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
       this.settings.userEmail = email;
       await this.saveSettings();
       this.api.setToken(token);
-      new import_obsidian3.Notice(`[SyncAgain] Signed in as ${email || userId}`);
+      new import_obsidian4.Notice(`Signed in as ${email || userId}`);
       if (this.settings.syncEnabled && this.settings.serverUrl) {
         this.restartSync();
       }
@@ -1031,11 +1054,9 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
     });
     this.settingTab = new SyncAgainSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    console.log("[SyncAgain] Plugin loaded.");
   }
   async onunload() {
     this.stopSync();
-    console.log("[SyncAgain] Plugin unloaded.");
   }
   // ── Sync lifecycle ────────────────────────────────────────────────────────
   startSync() {
@@ -1043,11 +1064,11 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
       return;
     this.stopSync();
     const intervalMs = this.settings.syncIntervalMinutes * 60 * 1e3;
-    this.syncManager.sync();
-    this.syncIntervalId = window.setInterval(() => this.syncManager.sync(), intervalMs);
-    this.eventListener.start().catch(
-      (err) => console.error("[SyncAgain] EventListener start error:", err)
-    );
+    void this.syncManager.sync();
+    this.syncIntervalId = window.setInterval(() => {
+      void this.syncManager.sync();
+    }, intervalMs);
+    this.eventListener.start();
   }
   stopSync() {
     if (this.syncIntervalId !== null) {
@@ -1071,10 +1092,10 @@ var SyncAgainPlugin = class extends import_obsidian3.Plugin {
   handleAuthFailure() {
     this.settings.authToken = "";
     this.settings.userId = "";
-    this.saveSettings();
+    void this.saveSettings();
     this.stopSync();
-    new import_obsidian3.Notice(
-      "[SyncAgain] Session expired or not signed in. Please sign in again in the settings.",
+    new import_obsidian4.Notice(
+      "Session expired or not signed in. Please sign in again in the SyncAgain settings.",
       8e3
     );
   }
