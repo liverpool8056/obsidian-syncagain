@@ -12,7 +12,10 @@ export interface SyncEvent {
   client_id: string | null;
 }
 
+export type ConnectionStatus = "connected" | "connecting" | "disconnected";
+
 type EventHandler = (event: SyncEvent) => void;
+type ConnectionStatusHandler = (status: ConnectionStatus) => void;
 
 /**
  * Manages a persistent SSE connection to the sync server.
@@ -32,11 +35,13 @@ export class EventListener {
     private readonly api: ApiClient,
     private readonly ownClientId: string,
     private readonly onRemoteChange: EventHandler,
+    private readonly onConnectionStatus?: ConnectionStatusHandler,
   ) {}
 
-  async start(): Promise<void> {
+  start(): void {
     this.stopped = false;
-    await this.connect();
+    this.onConnectionStatus?.("connecting");
+    this.connect();
   }
 
   stop(): void {
@@ -46,15 +51,17 @@ export class EventListener {
       this.retryTimeout = null;
     }
     this.closeSource();
+    this.onConnectionStatus?.("disconnected");
   }
 
-  private async connect(): Promise<void> {
+  private connect(): void {
     if (this.stopped) return;
 
     try {
       const url = this.api.buildEventsUrl();
       if (!url) {
         // Not signed in — don't attempt to connect.
+        this.onConnectionStatus?.("disconnected");
         return;
       }
       const es = new EventSource(url);
@@ -62,12 +69,13 @@ export class EventListener {
 
       es.onopen = () => {
         this.retryMs = 1_000; // reset backoff on successful connection
-        console.log("[SyncAgain] SSE connected.");
+        this.onConnectionStatus?.("connected");
       };
 
       es.onerror = () => {
         es.close();
         this.es = null;
+        this.onConnectionStatus?.("connecting");
         this.scheduleReconnect();
       };
 
@@ -81,7 +89,6 @@ export class EventListener {
             payload.event === "file_changed" ||
             payload.event === "file_deleted"
           ) {
-            console.log(`[SyncAgain] SSE event: ${payload.event} — ${payload.key}`);
             this.onRemoteChange(payload);
           }
         } catch {
@@ -98,8 +105,8 @@ export class EventListener {
 
   private scheduleReconnect(): void {
     if (this.stopped) return;
-    this.retryTimeout = setTimeout(async () => {
-      await this.connect();
+    this.retryTimeout = setTimeout(() => {
+      this.connect();
     }, this.retryMs);
     this.retryMs = Math.min(this.retryMs * 2, this.maxRetryMs);
   }
