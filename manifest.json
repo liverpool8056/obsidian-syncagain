@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-syncagain",
+  "name": "SyncAgain",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Periodically syncs modified vault files to a remote storage backend.",
+  "author": "Robin Xiang",
+  "authorUrl": "https://github.com/liverpool8056",
+  "isDesktopOnly": false
+}
