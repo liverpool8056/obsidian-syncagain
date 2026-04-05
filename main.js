@@ -48,16 +48,15 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "SyncAgain" });
-    containerEl.createEl("h3", { text: "Server" });
+    new import_obsidian.Setting(containerEl).setName("Server").setHeading();
     new import_obsidian.Setting(containerEl).setName("Server URL").setDesc('Base URL of the sync server, e.g. "http://localhost:8080"').addText(
-      (text) => text.setPlaceholder("http://localhost:8080").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
+      (text) => text.setPlaceholder("").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
         this.plugin.restartSync();
       })
     );
-    containerEl.createEl("h3", { text: "Account" });
+    new import_obsidian.Setting(containerEl).setName("Account").setHeading();
     const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
     if (isSignedIn) {
       new import_obsidian.Setting(containerEl).setName("Signed in").setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId).addButton(
@@ -92,7 +91,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
       );
       if (this.showSignInForm) {
         new import_obsidian.Setting(containerEl).setName("Email").addText((text) => {
-          text.setPlaceholder("you@example.com").setValue(this.emailInput).onChange((v) => {
+          text.setPlaceholder("").setValue(this.emailInput).onChange((v) => {
             this.emailInput = v.trim();
           });
         });
@@ -147,12 +146,16 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
     }
     if (!isSignedIn)
       return;
-    containerEl.createEl("h3", { text: "Sync" });
+    new import_obsidian.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian.Setting(containerEl).setName("Enable sync").setDesc("Turn periodic file sync on or off.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
         this.plugin.settings.syncEnabled = value;
         await this.plugin.saveSettings();
-        value ? this.plugin.startSync() : this.plugin.stopSync();
+        if (value) {
+          this.plugin.startSync();
+        } else {
+          this.plugin.stopSync();
+        }
       })
     );
     new import_obsidian.Setting(containerEl).setName("Sync interval (minutes)").setDesc("How often to run a full sync cycle.").addText(
@@ -165,7 +168,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
-    containerEl.createEl("h3", { text: "Deletion" });
+    new import_obsidian.Setting(containerEl).setName("Deletion").setHeading();
     new import_obsidian.Setting(containerEl).setName("Deletion strategy").setDesc(
       "Non-permanent: deleted files are moved to a remote trash and can be recovered. Permanent: files are immediately deleted with no recovery option."
     ).addDropdown(
@@ -177,12 +180,12 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     if (this.plugin.settings.deletionStrategy === "non-permanent") {
-      containerEl.createEl("h3", { text: "Trash" });
+      new import_obsidian.Setting(containerEl).setName("Trash").setHeading();
       const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
       trashContainer.createEl("p", { text: "Loading\u2026" });
       void this.loadTrashView(trashContainer);
     }
-    containerEl.createEl("h3", { text: "Info" });
+    new import_obsidian.Setting(containerEl).setName("Info").setHeading();
     new import_obsidian.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
       (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
     );
@@ -339,9 +342,6 @@ var FileTracker = class {
     return this.dirtyFiles.size;
   }
 };
-
-// src/sync-manager.ts
-var import_crypto = require("crypto");
 
 // src/api-client.ts
 var import_obsidian3 = require("obsidian");
@@ -591,9 +591,188 @@ var EMPTY_SYNC_STATE = {
 };
 
 // src/sync-manager.ts
-var STATE_FILE = ".obsidian/plugins/obsidian-syncagain/sync-state.json";
-function md5(data) {
-  return (0, import_crypto.createHash)("md5").update(Buffer.from(data)).digest("hex");
+function md5(buffer) {
+  const S = [
+    7,
+    12,
+    17,
+    22,
+    7,
+    12,
+    17,
+    22,
+    7,
+    12,
+    17,
+    22,
+    7,
+    12,
+    17,
+    22,
+    5,
+    9,
+    14,
+    20,
+    5,
+    9,
+    14,
+    20,
+    5,
+    9,
+    14,
+    20,
+    5,
+    9,
+    14,
+    20,
+    4,
+    11,
+    16,
+    23,
+    4,
+    11,
+    16,
+    23,
+    4,
+    11,
+    16,
+    23,
+    4,
+    11,
+    16,
+    23,
+    6,
+    10,
+    15,
+    21,
+    6,
+    10,
+    15,
+    21,
+    6,
+    10,
+    15,
+    21,
+    6,
+    10,
+    15,
+    21
+  ];
+  const T = [
+    3614090360,
+    3905402710,
+    606105819,
+    3250441966,
+    4118548399,
+    1200080426,
+    2821735955,
+    4249261313,
+    1770035416,
+    2336552879,
+    4294925233,
+    2304563134,
+    1804603682,
+    4254626195,
+    2792965006,
+    1236535329,
+    4129170786,
+    3225465664,
+    643717713,
+    3921069994,
+    3593408605,
+    38016083,
+    3634488961,
+    3889429448,
+    568446438,
+    3275163606,
+    4107603335,
+    1163531501,
+    2850285829,
+    4243563512,
+    1735328473,
+    2368359562,
+    4294588738,
+    2272392833,
+    1839030562,
+    4259657740,
+    2763975236,
+    1272893353,
+    4139469664,
+    3200236656,
+    681279174,
+    3936430074,
+    3572445317,
+    76029189,
+    3654602809,
+    3873151461,
+    530742520,
+    3299628645,
+    4096336452,
+    1126891415,
+    2878612391,
+    4237533241,
+    1700485571,
+    2399980690,
+    4293915773,
+    2240044497,
+    1873313359,
+    4264355552,
+    2734768916,
+    1309151649,
+    4149444226,
+    3174756917,
+    718787259,
+    3951481745
+  ];
+  const bytes = new Uint8Array(buffer);
+  const origLen = bytes.length;
+  const padLen = (origLen % 64 < 56 ? 56 : 120) - origLen % 64;
+  const padded = new Uint8Array(origLen + padLen + 8);
+  padded.set(bytes);
+  padded[origLen] = 128;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(origLen + padLen, origLen * 8 >>> 0, true);
+  dv.setUint32(origLen + padLen + 4, Math.floor(origLen * 8 / 4294967296), true);
+  const add = (x, y) => x + y >>> 0;
+  const rol = (x, n) => (x << n | x >>> 32 - n) >>> 0;
+  let a = 1732584193, b = 4023233417, c = 2562383102, d = 271733878;
+  for (let i = 0; i < padded.length; i += 64) {
+    const M = [];
+    for (let j = 0; j < 16; j++)
+      M.push(dv.getUint32(i + j * 4, true));
+    let A = a, B = b, C = c, D = d;
+    for (let j = 0; j < 64; j++) {
+      let F, g;
+      if (j < 16) {
+        F = (B & C | ~B >>> 0 & D) >>> 0;
+        g = j;
+      } else if (j < 32) {
+        F = (D & B | ~D >>> 0 & C) >>> 0;
+        g = (5 * j + 1) % 16;
+      } else if (j < 48) {
+        F = (B ^ C ^ D) >>> 0;
+        g = (3 * j + 5) % 16;
+      } else {
+        F = (C ^ (B | ~D >>> 0)) >>> 0;
+        g = 7 * j % 16;
+      }
+      const temp = add(add(add(A, F), M[g]), T[j]);
+      A = D;
+      D = C;
+      C = B;
+      B = add(B, rol(temp, S[j]));
+    }
+    a = add(a, A);
+    b = add(b, B);
+    c = add(c, C);
+    d = add(d, D);
+  }
+  const out = new DataView(new ArrayBuffer(16));
+  out.setUint32(0, a, true);
+  out.setUint32(4, b, true);
+  out.setUint32(8, c, true);
+  out.setUint32(12, d, true);
+  return Array.from(new Uint8Array(out.buffer)).map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 var SyncManager = class {
   constructor(vault, api, tracker) {
@@ -611,10 +790,13 @@ var SyncManager = class {
      */
     this.deletionStrategy = "non-permanent";
   }
+  get stateFile() {
+    return `${this.vault.configDir}/plugins/obsidian-syncagain/sync-state.json`;
+  }
   // ── State persistence ────────────────────────────────────────────────────
   async loadState() {
     try {
-      const raw = await this.vault.adapter.read(STATE_FILE);
+      const raw = await this.vault.adapter.read(this.stateFile);
       const parsed = JSON.parse(raw);
       this.state = { ...EMPTY_SYNC_STATE, ...parsed };
     } catch (e) {
@@ -622,7 +804,7 @@ var SyncManager = class {
     }
   }
   async saveState() {
-    await this.vault.adapter.write(STATE_FILE, JSON.stringify(this.state));
+    await this.vault.adapter.write(this.stateFile, JSON.stringify(this.state));
   }
   // ── Main sync entry point ─────────────────────────────────────────────────
   async sync() {
@@ -1055,7 +1237,7 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
     this.settingTab = new SyncAgainSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
   }
-  async onunload() {
+  onunload() {
     this.stopSync();
   }
   // ── Sync lifecycle ────────────────────────────────────────────────────────
@@ -1095,7 +1277,7 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
     void this.saveSettings();
     this.stopSync();
     new import_obsidian4.Notice(
-      "Session expired or not signed in. Please sign in again in the SyncAgain settings.",
+      "Session expired or not signed in. Please sign in again in the plugin settings.",
       8e3
     );
   }
@@ -1107,25 +1289,25 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
     const pending = (_b = (_a = this.tracker) == null ? void 0 : _a.pendingCount) != null ? _b : 0;
     switch (status) {
       case "syncing":
-        this.statusBarEl.setText("\u21BB Syncing");
-        this.statusBarEl.title = "SyncAgain: sync in progress";
+        this.statusBarEl.setText("Syncing");
+        this.statusBarEl.title = "Sync in progress";
         break;
       case "idle":
         if (pending > 0) {
-          this.statusBarEl.setText(`\u2191 ${pending} pending`);
-          this.statusBarEl.title = `SyncAgain: ${pending} file${pending === 1 ? "" : "s"} pending upload`;
+          this.statusBarEl.setText(`${pending} pending`);
+          this.statusBarEl.title = `${pending} file${pending === 1 ? "" : "s"} pending upload`;
         } else {
-          this.statusBarEl.setText("\u2713 Synced");
-          this.statusBarEl.title = "SyncAgain: vault is up to date";
+          this.statusBarEl.setText("Synced");
+          this.statusBarEl.title = "Vault is up to date";
         }
         break;
       case "error":
-        this.statusBarEl.setText("\u2717 Sync error");
-        this.statusBarEl.title = "SyncAgain: last sync failed \u2014 will retry";
+        this.statusBarEl.setText("Sync error");
+        this.statusBarEl.title = "Last sync failed \u2014 will retry";
         break;
       case "off":
-        this.statusBarEl.setText("\u23F8 Sync off");
-        this.statusBarEl.title = "SyncAgain: sync is disabled or not signed in";
+        this.statusBarEl.setText("Sync off");
+        this.statusBarEl.title = "Sync is disabled or not signed in";
         break;
     }
   }

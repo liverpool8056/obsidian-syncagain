@@ -105,7 +105,7 @@ export default class SyncAgainPlugin extends Plugin {
     this.addSettingTab(this.settingTab);
   }
 
-  async onunload(): Promise<void> {
+  onunload(): void {
     this.stopSync();
   }
 
@@ -149,7 +149,7 @@ export default class SyncAgainPlugin extends Plugin {
     void this.saveSettings();
     this.stopSync();
     new Notice(
-      "Session expired or not signed in. Please sign in again in the SyncAgain settings.",
+      "Session expired or not signed in. Please sign in again in the plugin settings.",
       8000,
     );
   }
@@ -161,25 +161,25 @@ export default class SyncAgainPlugin extends Plugin {
     const pending = this.tracker?.pendingCount ?? 0;
     switch (status) {
       case "syncing":
-        this.statusBarEl.setText("↻ Syncing");
-        this.statusBarEl.title = "SyncAgain: sync in progress";
+        this.statusBarEl.setText("Syncing");
+        this.statusBarEl.title = "Sync in progress";
         break;
       case "idle":
         if (pending > 0) {
-          this.statusBarEl.setText(`↑ ${pending} pending`);
-          this.statusBarEl.title = `SyncAgain: ${pending} file${pending === 1 ? "" : "s"} pending upload`;
+          this.statusBarEl.setText(`${pending} pending`);
+          this.statusBarEl.title = `${pending} file${pending === 1 ? "" : "s"} pending upload`;
         } else {
-          this.statusBarEl.setText("✓ Synced");
-          this.statusBarEl.title = "SyncAgain: vault is up to date";
+          this.statusBarEl.setText("Synced");
+          this.statusBarEl.title = "Vault is up to date";
         }
         break;
       case "error":
-        this.statusBarEl.setText("✗ Sync error");
-        this.statusBarEl.title = "SyncAgain: last sync failed — will retry";
+        this.statusBarEl.setText("Sync error");
+        this.statusBarEl.title = "Last sync failed — will retry";
         break;
       case "off":
-        this.statusBarEl.setText("⏸ Sync off");
-        this.statusBarEl.title = "SyncAgain: sync is disabled or not signed in";
+        this.statusBarEl.setText("Sync off");
+        this.statusBarEl.title = "Sync is disabled or not signed in";
         break;
     }
   }

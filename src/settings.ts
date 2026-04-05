@@ -52,18 +52,17 @@ export class SyncAgainSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "SyncAgain" });
 
     // ── Server ──────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Server" });
+    new Setting(containerEl).setName("Server").setHeading();
 
     new Setting(containerEl)
       .setName("Server URL")
       .setDesc('Base URL of the sync server, e.g. "http://localhost:8080"')
       .addText((text) =>
         text
-          .setPlaceholder("http://localhost:8080")
+          .setPlaceholder("")
           .setValue(this.plugin.settings.serverUrl)
           .onChange(async (value) => {
             this.plugin.settings.serverUrl = value.trim();
@@ -74,7 +73,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     // ── Account ─────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Account" });
+    new Setting(containerEl).setName("Account").setHeading();
 
     const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
 
@@ -134,7 +133,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           .setName("Email")
           .addText((text) => {
             text
-              .setPlaceholder("you@example.com")
+              .setPlaceholder("")
               .setValue(this.emailInput)
               .onChange((v) => { this.emailInput = v.trim(); });
           });
@@ -206,7 +205,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     if (!isSignedIn) return;
 
-    containerEl.createEl("h3", { text: "Sync" });
+    new Setting(containerEl).setName("Sync").setHeading();
 
     new Setting(containerEl)
       .setName("Enable sync")
@@ -215,7 +214,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
           this.plugin.settings.syncEnabled = value;
           await this.plugin.saveSettings();
-          value ? this.plugin.startSync() : this.plugin.stopSync();
+          if (value) { this.plugin.startSync(); } else { this.plugin.stopSync(); }
         }),
       );
 
@@ -238,7 +237,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     // ── Deletion ────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Deletion" });
+    new Setting(containerEl).setName("Deletion").setHeading();
 
     new Setting(containerEl)
       .setName("Deletion strategy")
@@ -262,7 +261,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
     // ── Trash ────────────────────────────────────────────────────────────────
 
     if (this.plugin.settings.deletionStrategy === "non-permanent") {
-      containerEl.createEl("h3", { text: "Trash" });
+      new Setting(containerEl).setName("Trash").setHeading();
 
       const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
       trashContainer.createEl("p", { text: "Loading…" });
@@ -271,7 +270,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     // ── Info ────────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Info" });
+    new Setting(containerEl).setName("Info").setHeading();
 
     new Setting(containerEl)
       .setName("Device ID")
