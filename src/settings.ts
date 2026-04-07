@@ -2,6 +2,7 @@ import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type SyncAgainPlugin from "./main";
 import type { DeletionStrategy } from "./sync-manager";
 import type { RemoteFileEntry } from "./metadata";
+import type { ConnectionStatus } from "./event-listener";
 
 export interface SyncAgainSettings {
   /** Base URL of the obsidian-sync-server, e.g. "http://localhost:8080" */
@@ -44,6 +45,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
   private passwordInput = "";
   private signingIn = false;
   private showSignInForm = false;
+  private connectionStatusEl: HTMLElement | null = null;
 
   constructor(app: App, private plugin: SyncAgainPlugin) {
     super(app, plugin);
@@ -70,6 +72,13 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             this.plugin.restartSync();
           }),
       );
+
+    const connSetting = new Setting(containerEl)
+      .setName("Connection");
+    this.connectionStatusEl = connSetting.controlEl.createEl("span", {
+      cls: "syncagain-conn-status",
+    });
+    this.renderConnectionStatus(this.plugin.sseStatus);
 
     // ── Account ─────────────────────────────────────────────────────────────
 
@@ -278,6 +287,28 @@ export class SyncAgainSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.clientId).setDisabled(true),
       );
+  }
+
+  // ── Connection status ──────────────────────────────────────────────────────
+
+  /** Called by the plugin whenever the SSE connection state changes. */
+  updateConnectionStatus(status: ConnectionStatus): void {
+    this.plugin.sseStatus = status;
+    this.renderConnectionStatus(status);
+  }
+
+  private renderConnectionStatus(status: ConnectionStatus): void {
+    if (!this.connectionStatusEl) return;
+    const labels: Record<ConnectionStatus, string> = {
+      connected: "Connected",
+      connecting: "Connecting…",
+      disconnected: "Disconnected",
+    };
+    this.connectionStatusEl.setText(labels[status]);
+    this.connectionStatusEl.setAttribute(
+      "class",
+      `syncagain-conn-status syncagain-conn-status--${status}`,
+    );
   }
 
   // ── Trash view ─────────────────────────────────────────────────────────────

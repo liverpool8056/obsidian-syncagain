@@ -12,7 +12,10 @@ export interface SyncEvent {
   client_id: string | null;
 }
 
+export type ConnectionStatus = "connected" | "connecting" | "disconnected";
+
 type EventHandler = (event: SyncEvent) => void;
+type ConnectionStatusHandler = (status: ConnectionStatus) => void;
 
 /**
  * Manages a persistent SSE connection to the sync server.
@@ -32,10 +35,12 @@ export class EventListener {
     private readonly api: ApiClient,
     private readonly ownClientId: string,
     private readonly onRemoteChange: EventHandler,
+    private readonly onConnectionStatus?: ConnectionStatusHandler,
   ) {}
 
   start(): void {
     this.stopped = false;
+    this.onConnectionStatus?.("connecting");
     this.connect();
   }
 
@@ -46,6 +51,7 @@ export class EventListener {
       this.retryTimeout = null;
     }
     this.closeSource();
+    this.onConnectionStatus?.("disconnected");
   }
 
   private connect(): void {
@@ -55,6 +61,7 @@ export class EventListener {
       const url = this.api.buildEventsUrl();
       if (!url) {
         // Not signed in — don't attempt to connect.
+        this.onConnectionStatus?.("disconnected");
         return;
       }
       const es = new EventSource(url);
@@ -62,11 +69,13 @@ export class EventListener {
 
       es.onopen = () => {
         this.retryMs = 1_000; // reset backoff on successful connection
+        this.onConnectionStatus?.("connected");
       };
 
       es.onerror = () => {
         es.close();
         this.es = null;
+        this.onConnectionStatus?.("connecting");
         this.scheduleReconnect();
       };
 

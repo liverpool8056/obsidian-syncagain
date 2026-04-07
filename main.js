@@ -44,6 +44,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
     this.passwordInput = "";
     this.signingIn = false;
     this.showSignInForm = false;
+    this.connectionStatusEl = null;
   }
   display() {
     const { containerEl } = this;
@@ -56,6 +57,11 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
         this.plugin.restartSync();
       })
     );
+    const connSetting = new import_obsidian.Setting(containerEl).setName("Connection");
+    this.connectionStatusEl = connSetting.controlEl.createEl("span", {
+      cls: "syncagain-conn-status"
+    });
+    this.renderConnectionStatus(this.plugin.sseStatus);
     new import_obsidian.Setting(containerEl).setName("Account").setHeading();
     const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
     if (isSignedIn) {
@@ -188,6 +194,26 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Info").setHeading();
     new import_obsidian.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
       (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
+    );
+  }
+  // ── Connection status ──────────────────────────────────────────────────────
+  /** Called by the plugin whenever the SSE connection state changes. */
+  updateConnectionStatus(status) {
+    this.plugin.sseStatus = status;
+    this.renderConnectionStatus(status);
+  }
+  renderConnectionStatus(status) {
+    if (!this.connectionStatusEl)
+      return;
+    const labels = {
+      connected: "Connected",
+      connecting: "Connecting\u2026",
+      disconnected: "Disconnected"
+    };
+    this.connectionStatusEl.setText(labels[status]);
+    this.connectionStatusEl.setAttribute(
+      "class",
+      `syncagain-conn-status syncagain-conn-status--${status}`
     );
   }
   // ── Trash view ─────────────────────────────────────────────────────────────
@@ -1087,10 +1113,11 @@ var SyncManager = class {
 
 // src/event-listener.ts
 var EventListener = class {
-  constructor(api, ownClientId, onRemoteChange) {
+  constructor(api, ownClientId, onRemoteChange, onConnectionStatus) {
     this.api = api;
     this.ownClientId = ownClientId;
     this.onRemoteChange = onRemoteChange;
+    this.onConnectionStatus = onConnectionStatus;
     this.es = null;
     this.retryMs = 1e3;
     this.maxRetryMs = 3e4;
@@ -1098,33 +1125,43 @@ var EventListener = class {
     this.retryTimeout = null;
   }
   start() {
+    var _a;
     this.stopped = false;
+    (_a = this.onConnectionStatus) == null ? void 0 : _a.call(this, "connecting");
     this.connect();
   }
   stop() {
+    var _a;
     this.stopped = true;
     if (this.retryTimeout !== null) {
       clearTimeout(this.retryTimeout);
       this.retryTimeout = null;
     }
     this.closeSource();
+    (_a = this.onConnectionStatus) == null ? void 0 : _a.call(this, "disconnected");
   }
   connect() {
+    var _a;
     if (this.stopped)
       return;
     try {
       const url = this.api.buildEventsUrl();
       if (!url) {
+        (_a = this.onConnectionStatus) == null ? void 0 : _a.call(this, "disconnected");
         return;
       }
       const es = new EventSource(url);
       this.es = es;
       es.onopen = () => {
+        var _a2;
         this.retryMs = 1e3;
+        (_a2 = this.onConnectionStatus) == null ? void 0 : _a2.call(this, "connected");
       };
       es.onerror = () => {
+        var _a2;
         es.close();
         this.es = null;
+        (_a2 = this.onConnectionStatus) == null ? void 0 : _a2.call(this, "connecting");
         this.scheduleReconnect();
       };
       const handleEvent = (raw) => {
@@ -1164,6 +1201,7 @@ var EventListener = class {
 var SyncAgainPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
+    this.sseStatus = "disconnected";
     this.syncIntervalId = null;
     this.statusBarEl = null;
   }
@@ -1185,14 +1223,19 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
     this.syncManager = new SyncManager(this.app.vault, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
     this.syncManager.deletionStrategy = this.settings.deletionStrategy;
-    this.eventListener = new EventListener(this.api, this.settings.clientId, (event) => {
-      if (event.key) {
-        if (event.event === "file_changed") {
-          void this.syncManager.syncKey(event.key);
-        } else if (event.event === "file_deleted") {
+    this.eventListener = new EventListener(
+      this.api,
+      this.settings.clientId,
+      (event) => {
+        if (event.key) {
+          if (event.event === "file_changed") {
+            void this.syncManager.syncKey(event.key);
+          } else if (event.event === "file_deleted") {
+          }
         }
-      }
-    });
+      },
+      (status) => this.onSseStatus(status)
+    );
     this.registerObsidianProtocolHandler("syncagain-auth", async (params) => {
       var _a;
       const token = params["token"];
@@ -1280,6 +1323,12 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
       "Session expired or not signed in. Please sign in again in the plugin settings.",
       8e3
     );
+  }
+  // ── SSE connection status ─────────────────────────────────────────────────
+  onSseStatus(status) {
+    var _a;
+    this.sseStatus = status;
+    (_a = this.settingTab) == null ? void 0 : _a.updateConnectionStatus(status);
   }
   // ── Status bar ────────────────────────────────────────────────────────────
   updateStatusBar(status) {

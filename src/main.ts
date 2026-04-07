@@ -4,7 +4,7 @@ import { SyncAgainSettings, DEFAULT_SETTINGS, SyncAgainSettingTab } from "./sett
 import { FileTracker } from "./file-tracker";
 import { SyncManager, SyncStatus } from "./sync-manager";
 import { ApiClient } from "./api-client";
-import { EventListener } from "./event-listener";
+import { EventListener, ConnectionStatus } from "./event-listener";
 
 export default class SyncAgainPlugin extends Plugin {
   settings: SyncAgainSettings;
@@ -15,6 +15,7 @@ export default class SyncAgainPlugin extends Plugin {
   private tracker: FileTracker;
   syncManager: SyncManager;
   private eventListener: EventListener;
+  sseStatus: ConnectionStatus = "disconnected";
   private syncIntervalId: number | null = null;
   private settingTab: SyncAgainSettingTab;
   private statusBarEl: HTMLElement | null = null;
@@ -41,15 +42,20 @@ export default class SyncAgainPlugin extends Plugin {
     this.syncManager = new SyncManager(this.app.vault, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
     this.syncManager.deletionStrategy = this.settings.deletionStrategy;
-    this.eventListener = new EventListener(this.api, this.settings.clientId, (event) => {
-      if (event.key) {
-        if (event.event === "file_changed") {
-          void this.syncManager.syncKey(event.key);
-        } else if (event.event === "file_deleted") {
-          // Let the next full sync cycle handle the deletion.
+    this.eventListener = new EventListener(
+      this.api,
+      this.settings.clientId,
+      (event) => {
+        if (event.key) {
+          if (event.event === "file_changed") {
+            void this.syncManager.syncKey(event.key);
+          } else if (event.event === "file_deleted") {
+            // Let the next full sync cycle handle the deletion.
+          }
         }
-      }
-    });
+      },
+      (status) => this.onSseStatus(status),
+    );
 
     // Handle the obsidian://syncagain-auth callback from the browser registration page.
     this.registerObsidianProtocolHandler("syncagain-auth", async (params) => {
@@ -152,6 +158,13 @@ export default class SyncAgainPlugin extends Plugin {
       "Session expired or not signed in. Please sign in again in the plugin settings.",
       8000,
     );
+  }
+
+  // ── SSE connection status ─────────────────────────────────────────────────
+
+  private onSseStatus(status: ConnectionStatus): void {
+    this.sseStatus = status;
+    this.settingTab?.updateConnectionStatus(status);
   }
 
   // ── Status bar ────────────────────────────────────────────────────────────

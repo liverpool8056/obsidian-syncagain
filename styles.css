@@ -1,0 +1,21 @@
+.syncagain-conn-status {
+  font-size: var(--font-ui-small);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.syncagain-conn-status--connected {
+  color: var(--color-green);
+  background-color: rgba(var(--color-green-rgb), 0.12);
+}
+
+.syncagain-conn-status--connecting {
+  color: var(--color-yellow);
+  background-color: rgba(var(--color-yellow-rgb), 0.12);
+}
+
+.syncagain-conn-status--disconnected {
+  color: var(--text-muted);
+  background-color: var(--background-modifier-border);
+}
