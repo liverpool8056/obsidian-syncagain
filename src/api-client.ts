@@ -200,47 +200,6 @@ export class ApiClient {
     await this.request("DELETE", `/api/files?key=${encodeURIComponent(key)}`);
   }
 
-  // ── Trash ─────────────────────────────────────────────────────────────────
-
-  /**
-   * Move `key` to the trash (`_delete/` prefix) on the server.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async moveToTrash(key: string): Promise<void> {
-    await this.request("POST", `/api/files/trash?key=${encodeURIComponent(key)}`);
-  }
-
-  /** List files currently in the trash. Returns entries with original-path keys. */
-  async listTrash(): Promise<RemoteFileEntry[]> {
-    const data = await this.request<{ files: RemoteFileEntry[] }>("GET", "/api/files/trash");
-    return data.files;
-  }
-
-  /**
-   * Restore `key` from the trash to its original path.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async recoverFromTrash(key: string): Promise<void> {
-    await this.request("POST", `/api/files/recover?key=${encodeURIComponent(key)}`);
-  }
-
-  /**
-   * Permanently delete `key` from the trash (no recovery possible).
-   * No lock is required.
-   */
-  async deleteFromTrash(key: string): Promise<void> {
-    await this.request("DELETE", `/api/files/trash?key=${encodeURIComponent(key)}`);
-  }
-
-  /**
-   * Permanently delete `key` from the server (no recovery).
-   * Writes a `_deleted/` tombstone so other clients propagate the deletion.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async permanentDeleteFile(key: string): Promise<void> {
-    await this.request("DELETE", `/api/files/permanent?key=${encodeURIComponent(key)}`);
-  }
-
   // ── Locks ─────────────────────────────────────────────────────────────────
 
   /**

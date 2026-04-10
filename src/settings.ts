@@ -1,7 +1,5 @@
-import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type SyncAgainPlugin from "./main";
-import type { DeletionStrategy } from "./sync-manager";
-import type { RemoteFileEntry } from "./metadata";
 import type { ConnectionStatus } from "./event-listener";
 
 export interface SyncAgainSettings {
@@ -21,12 +19,6 @@ export interface SyncAgainSettings {
   userEmail: string;
   /** JWT stored after a successful sign-in (30-day expiry) */
   authToken: string;
-  /**
-   * How local file deletions are handled on the server.
-   * - "non-permanent": file is moved to `_delete/` and can be recovered via the Trash view.
-   * - "permanent": file is deleted immediately and a tombstone is written (no recovery).
-   */
-  deletionStrategy: DeletionStrategy;
 }
 
 export const DEFAULT_SETTINGS: SyncAgainSettings = {
@@ -37,7 +29,6 @@ export const DEFAULT_SETTINGS: SyncAgainSettings = {
   userId: "",
   userEmail: "",
   authToken: "",
-  deletionStrategy: "non-permanent",
 };
 
 export class SyncAgainSettingTab extends PluginSettingTab {
@@ -223,7 +214,13 @@ export class SyncAgainSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
           this.plugin.settings.syncEnabled = value;
           await this.plugin.saveSettings();
-          if (value) { this.plugin.startSync(); } else { this.plugin.stopSync(); }
+          if (value) {
+            this.plugin.startSync();
+          } else {
+            // Run a final sync cycle to flush locally-present but server-absent
+            // files before stopping, then stop once it completes.
+            void this.plugin.syncManager.sync().finally(() => this.plugin.stopSync());
+          }
         }),
       );
 
@@ -243,39 +240,6 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             }
           }),
       );
-
-    // ── Deletion ────────────────────────────────────────────────────────────
-
-    new Setting(containerEl).setName("Deletion").setHeading();
-
-    new Setting(containerEl)
-      .setName("Deletion strategy")
-      .setDesc(
-        "Non-permanent: deleted files are moved to a remote trash and can be recovered. " +
-        "Permanent: files are immediately deleted with no recovery option.",
-      )
-      .addDropdown((drop) =>
-        drop
-          .addOption("non-permanent", "Non-permanent (recoverable)")
-          .addOption("permanent", "Permanent (no recovery)")
-          .setValue(this.plugin.settings.deletionStrategy)
-          .onChange(async (value) => {
-            this.plugin.settings.deletionStrategy = value as DeletionStrategy;
-            await this.plugin.saveSettings();
-            this.plugin.syncManager.deletionStrategy = value as DeletionStrategy;
-            this.display(); // re-render to show/hide trash view
-          }),
-      );
-
-    // ── Trash ────────────────────────────────────────────────────────────────
-
-    if (this.plugin.settings.deletionStrategy === "non-permanent") {
-      new Setting(containerEl).setName("Trash").setHeading();
-
-      const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
-      trashContainer.createEl("p", { text: "Loading…" });
-      void this.loadTrashView(trashContainer);
-    }
 
     // ── Info ────────────────────────────────────────────────────────────────
 
@@ -311,115 +275,4 @@ export class SyncAgainSettingTab extends PluginSettingTab {
     );
   }
 
-  // ── Trash view ─────────────────────────────────────────────────────────────
-
-  private async loadTrashView(container: HTMLElement): Promise<void> {
-    container.empty();
-    container.createEl("p", { text: "Loading…" });
-
-    let files: RemoteFileEntry[];
-    try {
-      files = await this.plugin.api.listTrash();
-    } catch {
-      container.empty();
-      container.createEl("p", { text: "Failed to load trash. Is the server reachable?" });
-      return;
-    }
-
-    container.empty();
-
-    if (files.length === 0) {
-      container.createEl("p", { text: "Trash is empty." });
-      return;
-    }
-
-    for (const entry of files) {
-      const filename = entry.key.split("/").pop() ?? entry.key;
-      const originalPath = entry.key;
-
-      new Setting(container)
-        .setName(filename)
-        .setDesc(originalPath !== filename ? originalPath : "")
-        .addButton((btn) =>
-          btn
-            .setButtonText("Recover")
-            .setCta()
-            .onClick(async () => {
-              btn.setButtonText("Recovering…").setDisabled(true);
-              try {
-                await this.plugin.api.acquireLocks([originalPath]);
-                try {
-                  await this.plugin.api.recoverFromTrash(originalPath);
-                  // Server has moved _delete/<key> back to <key>; download it locally.
-                  await this.plugin.syncManager.recoverKey(originalPath);
-                  new Notice(`Recovered: ${filename}`);
-                } finally {
-                  try { await this.plugin.api.releaseLocks([originalPath]); } catch { /* best-effort */ }
-                }
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                new Notice(`Recovery failed: ${msg}`);
-              }
-              void this.loadTrashView(container);
-            }),
-        )
-        .addButton((btn) =>
-          btn
-            .setButtonText("Delete")
-            .setWarning()
-            .onClick(() => {
-              new ConfirmDeleteModal(this.app, filename, async () => {
-                try {
-                  await this.plugin.api.deleteFromTrash(originalPath);
-                  new Notice(`Permanently deleted: ${filename}`);
-                } catch (err) {
-                  const msg = err instanceof Error ? err.message : String(err);
-                  new Notice(`Delete failed: ${msg}`);
-                }
-                void this.loadTrashView(container);
-              }).open();
-            }),
-        );
-    }
-  }
-}
-
-// ── Confirm-delete modal ──────────────────────────────────────────────────────
-
-class ConfirmDeleteModal extends Modal {
-  constructor(
-    app: App,
-    private readonly filename: string,
-    private readonly onConfirm: () => Promise<void>,
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Permanently delete?" });
-    contentEl.createEl("p", {
-      text: `"${this.filename}" will be permanently deleted and cannot be recovered.`,
-    });
-
-    new Setting(contentEl)
-      .addButton((btn) =>
-        btn
-          .setButtonText("Cancel")
-          .onClick(() => this.close()),
-      )
-      .addButton((btn) =>
-        btn
-          .setButtonText("Delete permanently")
-          .setWarning()
-          .onClick(async () => {
-            this.close();
-            await this.onConfirm();
-          }),
-      );
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
 }

@@ -1,5 +1,7 @@
 import { Notice, Plugin, TAbstractFile } from "obsidian";
 
+import { showConflictResolutionModal } from "./first-sync-modal";
+
 import { SyncAgainSettings, DEFAULT_SETTINGS, SyncAgainSettingTab } from "./settings";
 import { FileTracker } from "./file-tracker";
 import { SyncManager, SyncStatus } from "./sync-manager";
@@ -39,9 +41,10 @@ export default class SyncAgainPlugin extends Plugin {
       this.settings.authToken || null,
       () => this.handleAuthFailure(),
     );
-    this.syncManager = new SyncManager(this.app.vault, this.api, this.tracker);
+    this.syncManager = new SyncManager(this.app.vault, this.app.fileManager, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
-    this.syncManager.deletionStrategy = this.settings.deletionStrategy;
+    this.syncManager.onFirstSyncConflict = (conflicts) =>
+      showConflictResolutionModal(this.app, conflicts);
     this.eventListener = new EventListener(
       this.api,
       this.settings.clientId,

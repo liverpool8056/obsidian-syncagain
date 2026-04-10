@@ -22,10 +22,96 @@ __export(main_exports, {
   default: () => SyncAgainPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
+
+// src/first-sync-modal.ts
+var import_obsidian = require("obsidian");
+function showConflictResolutionModal(app, conflicts) {
+  return new Promise((resolve) => {
+    new ConflictResolutionModal(app, conflicts, resolve).open();
+  });
+}
+var ConflictResolutionModal = class extends import_obsidian.Modal {
+  constructor(app, conflicts, resolve) {
+    super(app);
+    this.conflicts = conflicts;
+    this.resolve = resolve;
+    this.resolved = false;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Sync conflicts detected" });
+    contentEl.createEl("p", {
+      text: `${this.conflicts.length} file${this.conflicts.length === 1 ? "" : "s"} exist both locally and on the server with different content. Choose how to resolve all conflicts:`
+    });
+    const table = contentEl.createEl("table");
+    const headerRow = table.createEl("thead").createEl("tr");
+    headerRow.createEl("th", { text: "File" });
+    headerRow.createEl("th", { text: "Local modified" });
+    headerRow.createEl("th", { text: "Remote modified" });
+    const tbody = table.createEl("tbody");
+    for (const c of this.conflicts) {
+      const row = tbody.createEl("tr");
+      row.createEl("td", { text: c.path });
+      row.createEl("td", { text: new Date(c.localMtime).toLocaleString() });
+      row.createEl("td", { text: new Date(c.remoteMtime).toLocaleString() });
+    }
+    const buttonRow = contentEl.createDiv({ cls: "modal-button-container" });
+    buttonRow.createEl("button", { text: "Keep remote" }).addEventListener("click", () => {
+      this.resolved = true;
+      this.close();
+      this.resolve(/* @__PURE__ */ new Set());
+    });
+    buttonRow.createEl("button", { text: "Keep local", cls: "mod-cta" }).addEventListener("click", () => {
+      this.resolved = true;
+      this.close();
+      this.resolve(new Set(this.conflicts.map((c) => c.path)));
+    });
+  }
+  onClose() {
+    if (!this.resolved) {
+      new ConflictConfirmModal(this.app, this.conflicts, this.resolve).open();
+    }
+    this.contentEl.empty();
+  }
+};
+var ConflictConfirmModal = class extends import_obsidian.Modal {
+  constructor(app, conflicts, resolve) {
+    super(app);
+    this.conflicts = conflicts;
+    this.resolve = resolve;
+    this.resolved = false;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Keep remote versions?" });
+    contentEl.createEl("p", {
+      text: "You have unresolved conflicts. Remote is the authoritative source for a device joining an existing account. All conflicting files will be overwritten with the remote version."
+    });
+    const buttonRow = contentEl.createDiv({ cls: "modal-button-container" });
+    buttonRow.createEl("button", { text: "Cancel" }).addEventListener("click", () => {
+      this.resolved = true;
+      this.close();
+      new ConflictResolutionModal(this.app, this.conflicts, this.resolve).open();
+    });
+    buttonRow.createEl("button", { text: "Confirm", cls: "mod-warning" }).addEventListener("click", () => {
+      this.resolved = true;
+      this.close();
+      this.resolve(/* @__PURE__ */ new Set());
+    });
+  }
+  onClose() {
+    if (!this.resolved) {
+      this.resolve(/* @__PURE__ */ new Set());
+    }
+    this.contentEl.empty();
+  }
+};
 
 // src/settings.ts
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 var DEFAULT_SETTINGS = {
   serverUrl: "",
   clientId: "",
@@ -33,10 +119,9 @@ var DEFAULT_SETTINGS = {
   syncEnabled: true,
   userId: "",
   userEmail: "",
-  authToken: "",
-  deletionStrategy: "non-permanent"
+  authToken: ""
 };
-var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
+var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -49,23 +134,23 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Server").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Server URL").setDesc('Base URL of the sync server, e.g. "http://localhost:8080"').addText(
+    new import_obsidian2.Setting(containerEl).setName("Server").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Server URL").setDesc('Base URL of the sync server, e.g. "http://localhost:8080"').addText(
       (text) => text.setPlaceholder("").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
         this.plugin.restartSync();
       })
     );
-    const connSetting = new import_obsidian.Setting(containerEl).setName("Connection");
+    const connSetting = new import_obsidian2.Setting(containerEl).setName("Connection");
     this.connectionStatusEl = connSetting.controlEl.createEl("span", {
       cls: "syncagain-conn-status"
     });
     this.renderConnectionStatus(this.plugin.sseStatus);
-    new import_obsidian.Setting(containerEl).setName("Account").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Account").setHeading();
     const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
     if (isSignedIn) {
-      new import_obsidian.Setting(containerEl).setName("Signed in").setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId).addButton(
+      new import_obsidian2.Setting(containerEl).setName("Signed in").setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId).addButton(
         (btn) => btn.setButtonText("Sign out").setWarning().onClick(async () => {
           this.plugin.settings.authToken = "";
           this.plugin.settings.userId = "";
@@ -75,15 +160,15 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
           this.display();
         })
       );
-      new import_obsidian.Setting(containerEl).setName("User ID").setDesc("Your account ID on the server (read-only).").addText(
+      new import_obsidian2.Setting(containerEl).setName("User ID").setDesc("Your account ID on the server (read-only).").addText(
         (text) => text.setValue(this.plugin.settings.userId).setDisabled(true)
       );
     } else {
-      new import_obsidian.Setting(containerEl).setName("Account").setDesc("Create a new account or sign in to an existing one.").addButton(
+      new import_obsidian2.Setting(containerEl).setName("Account").setDesc("Create a new account or sign in to an existing one.").addButton(
         (btn) => btn.setButtonText("Sign up").onClick(() => {
           const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
           if (!base) {
-            new import_obsidian.Notice("Set the server URL first.");
+            new import_obsidian2.Notice("Set the server URL first.");
             return;
           }
           const url = `${base}/register?client_id=${this.plugin.settings.clientId}`;
@@ -96,29 +181,29 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
         })
       );
       if (this.showSignInForm) {
-        new import_obsidian.Setting(containerEl).setName("Email").addText((text) => {
+        new import_obsidian2.Setting(containerEl).setName("Email").addText((text) => {
           text.setPlaceholder("").setValue(this.emailInput).onChange((v) => {
             this.emailInput = v.trim();
           });
         });
-        new import_obsidian.Setting(containerEl).setName("Password").addText((text) => {
+        new import_obsidian2.Setting(containerEl).setName("Password").addText((text) => {
           text.inputEl.type = "password";
           text.setPlaceholder("\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022").setValue(this.passwordInput).onChange((v) => {
             this.passwordInput = v;
           });
         });
-        new import_obsidian.Setting(containerEl).addButton((btn) => {
+        new import_obsidian2.Setting(containerEl).addButton((btn) => {
           btn.setButtonText(this.signingIn ? "Signing in\u2026" : "Confirm").setCta().setDisabled(this.signingIn).onClick(async () => {
             if (!this.plugin.settings.serverUrl) {
-              new import_obsidian.Notice("Set the server URL first.");
+              new import_obsidian2.Notice("Set the server URL first.");
               return;
             }
             if (!this.emailInput) {
-              new import_obsidian.Notice("Please enter your email.");
+              new import_obsidian2.Notice("Please enter your email.");
               return;
             }
             if (!this.passwordInput) {
-              new import_obsidian.Notice("Please enter your password.");
+              new import_obsidian2.Notice("Please enter your password.");
               return;
             }
             this.signingIn = true;
@@ -132,7 +217,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
               this.plugin.settings.userId = result.userId;
               this.plugin.settings.userEmail = result.userEmail;
               await this.plugin.saveSettings();
-              new import_obsidian.Notice(`Signed in as ${result.userEmail}`);
+              new import_obsidian2.Notice(`Signed in as ${result.userEmail}`);
               this.passwordInput = "";
               this.signingIn = false;
               this.showSignInForm = false;
@@ -142,7 +227,7 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
               this.display();
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian.Notice(`Sign-in failed: ${msg}`);
+              new import_obsidian2.Notice(`Sign-in failed: ${msg}`);
               this.signingIn = false;
               btn.setButtonText("Confirm").setDisabled(false);
             }
@@ -152,19 +237,19 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
     }
     if (!isSignedIn)
       return;
-    new import_obsidian.Setting(containerEl).setName("Sync").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Enable sync").setDesc("Turn periodic file sync on or off.").addToggle(
+    new import_obsidian2.Setting(containerEl).setName("Sync").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Enable sync").setDesc("Turn periodic file sync on or off.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
         this.plugin.settings.syncEnabled = value;
         await this.plugin.saveSettings();
         if (value) {
           this.plugin.startSync();
         } else {
-          this.plugin.stopSync();
+          void this.plugin.syncManager.sync().finally(() => this.plugin.stopSync());
         }
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Sync interval (minutes)").setDesc("How often to run a full sync cycle.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Sync interval (minutes)").setDesc("How often to run a full sync cycle.").addText(
       (text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncIntervalMinutes)).onChange(async (value) => {
         const parsed = parseInt(value, 10);
         if (!isNaN(parsed) && parsed > 0) {
@@ -174,25 +259,8 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Deletion").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Deletion strategy").setDesc(
-      "Non-permanent: deleted files are moved to a remote trash and can be recovered. Permanent: files are immediately deleted with no recovery option."
-    ).addDropdown(
-      (drop) => drop.addOption("non-permanent", "Non-permanent (recoverable)").addOption("permanent", "Permanent (no recovery)").setValue(this.plugin.settings.deletionStrategy).onChange(async (value) => {
-        this.plugin.settings.deletionStrategy = value;
-        await this.plugin.saveSettings();
-        this.plugin.syncManager.deletionStrategy = value;
-        this.display();
-      })
-    );
-    if (this.plugin.settings.deletionStrategy === "non-permanent") {
-      new import_obsidian.Setting(containerEl).setName("Trash").setHeading();
-      const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
-      trashContainer.createEl("p", { text: "Loading\u2026" });
-      void this.loadTrashView(trashContainer);
-    }
-    new import_obsidian.Setting(containerEl).setName("Info").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
+    new import_obsidian2.Setting(containerEl).setName("Info").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
       (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
     );
   }
@@ -216,93 +284,10 @@ var SyncAgainSettingTab = class extends import_obsidian.PluginSettingTab {
       `syncagain-conn-status syncagain-conn-status--${status}`
     );
   }
-  // ── Trash view ─────────────────────────────────────────────────────────────
-  async loadTrashView(container) {
-    var _a;
-    container.empty();
-    container.createEl("p", { text: "Loading\u2026" });
-    let files;
-    try {
-      files = await this.plugin.api.listTrash();
-    } catch (e) {
-      container.empty();
-      container.createEl("p", { text: "Failed to load trash. Is the server reachable?" });
-      return;
-    }
-    container.empty();
-    if (files.length === 0) {
-      container.createEl("p", { text: "Trash is empty." });
-      return;
-    }
-    for (const entry of files) {
-      const filename = (_a = entry.key.split("/").pop()) != null ? _a : entry.key;
-      const originalPath = entry.key;
-      new import_obsidian.Setting(container).setName(filename).setDesc(originalPath !== filename ? originalPath : "").addButton(
-        (btn) => btn.setButtonText("Recover").setCta().onClick(async () => {
-          btn.setButtonText("Recovering\u2026").setDisabled(true);
-          try {
-            await this.plugin.api.acquireLocks([originalPath]);
-            try {
-              await this.plugin.api.recoverFromTrash(originalPath);
-              await this.plugin.syncManager.recoverKey(originalPath);
-              new import_obsidian.Notice(`Recovered: ${filename}`);
-            } finally {
-              try {
-                await this.plugin.api.releaseLocks([originalPath]);
-              } catch (e) {
-              }
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            new import_obsidian.Notice(`Recovery failed: ${msg}`);
-          }
-          void this.loadTrashView(container);
-        })
-      ).addButton(
-        (btn) => btn.setButtonText("Delete").setWarning().onClick(() => {
-          new ConfirmDeleteModal(this.app, filename, async () => {
-            try {
-              await this.plugin.api.deleteFromTrash(originalPath);
-              new import_obsidian.Notice(`Permanently deleted: ${filename}`);
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian.Notice(`Delete failed: ${msg}`);
-            }
-            void this.loadTrashView(container);
-          }).open();
-        })
-      );
-    }
-  }
-};
-var ConfirmDeleteModal = class extends import_obsidian.Modal {
-  constructor(app, filename, onConfirm) {
-    super(app);
-    this.filename = filename;
-    this.onConfirm = onConfirm;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Permanently delete?" });
-    contentEl.createEl("p", {
-      text: `"${this.filename}" will be permanently deleted and cannot be recovered.`
-    });
-    new import_obsidian.Setting(contentEl).addButton(
-      (btn) => btn.setButtonText("Cancel").onClick(() => this.close())
-    ).addButton(
-      (btn) => btn.setButtonText("Delete permanently").setWarning().onClick(async () => {
-        this.close();
-        await this.onConfirm();
-      })
-    );
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
 };
 
 // src/file-tracker.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 var FileTracker = class {
   constructor() {
     this.dirtyFiles = /* @__PURE__ */ new Map();
@@ -319,7 +304,9 @@ var FileTracker = class {
     this.suppressOnce.add(path);
   }
   markDirty(file) {
-    if (!(file instanceof import_obsidian2.TFile))
+    if (!(file instanceof import_obsidian3.TFile))
+      return;
+    if (file.path.startsWith(".trash/"))
       return;
     if (this.suppressOnce.delete(file.path))
       return;
@@ -329,16 +316,18 @@ var FileTracker = class {
     });
   }
   markDirtyByPath(path) {
+    if (path.startsWith(".trash/"))
+      return;
     this.dirtyFiles.set(path, { path, modifiedAt: Date.now() });
   }
   handleRename(file, oldPath) {
-    if (!(file instanceof import_obsidian2.TFile))
+    if (!(file instanceof import_obsidian3.TFile))
       return;
     this.dirtyFiles.delete(oldPath);
     this.markDirty(file);
   }
   handleDelete(file) {
-    if (!(file instanceof import_obsidian2.TFile))
+    if (!(file instanceof import_obsidian3.TFile))
       return;
     this.dirtyFiles.delete(file.path);
     if (this.suppressOnce.delete(file.path))
@@ -370,7 +359,7 @@ var FileTracker = class {
 };
 
 // src/api-client.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var ApiError = class extends Error {
   constructor(status, message) {
     super(message);
@@ -401,7 +390,7 @@ var ApiClient = class {
    */
   async loginWithCredentials(email, password) {
     var _a;
-    const res = await (0, import_obsidian3.requestUrl)({
+    const res = await (0, import_obsidian4.requestUrl)({
       url: `${this.serverUrl}/api/auth/login`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -428,7 +417,7 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in. Please sign in in the SyncAgain settings.");
     }
-    const res = await (0, import_obsidian3.requestUrl)({
+    const res = await (0, import_obsidian4.requestUrl)({
       url: `${this.serverUrl}${path}`,
       method,
       headers: {
@@ -466,7 +455,7 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in.");
     }
-    const res = await (0, import_obsidian3.requestUrl)({
+    const res = await (0, import_obsidian4.requestUrl)({
       url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
       headers: { Authorization: `Bearer ${this.token}` },
       throw: false
@@ -512,7 +501,7 @@ Content-Type: ${contentType}\r
     body.set(fileHeader, keyPart.length);
     body.set(fileBytes, keyPart.length + fileHeader.length);
     body.set(footer, keyPart.length + fileHeader.length + fileBytes.length);
-    const res = await (0, import_obsidian3.requestUrl)({
+    const res = await (0, import_obsidian4.requestUrl)({
       url: `${this.serverUrl}/api/files/upload`,
       method: "POST",
       headers: {
@@ -539,41 +528,6 @@ Content-Type: ${contentType}\r
   /** Delete `key` on the server. The caller must hold the lock. */
   async deleteFile(key) {
     await this.request("DELETE", `/api/files?key=${encodeURIComponent(key)}`);
-  }
-  // ── Trash ─────────────────────────────────────────────────────────────────
-  /**
-   * Move `key` to the trash (`_delete/` prefix) on the server.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async moveToTrash(key) {
-    await this.request("POST", `/api/files/trash?key=${encodeURIComponent(key)}`);
-  }
-  /** List files currently in the trash. Returns entries with original-path keys. */
-  async listTrash() {
-    const data = await this.request("GET", "/api/files/trash");
-    return data.files;
-  }
-  /**
-   * Restore `key` from the trash to its original path.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async recoverFromTrash(key) {
-    await this.request("POST", `/api/files/recover?key=${encodeURIComponent(key)}`);
-  }
-  /**
-   * Permanently delete `key` from the trash (no recovery possible).
-   * No lock is required.
-   */
-  async deleteFromTrash(key) {
-    await this.request("DELETE", `/api/files/trash?key=${encodeURIComponent(key)}`);
-  }
-  /**
-   * Permanently delete `key` from the server (no recovery).
-   * Writes a `_deleted/` tombstone so other clients propagate the deletion.
-   * The caller must hold the lock on `key`. The server releases the lock.
-   */
-  async permanentDeleteFile(key) {
-    await this.request("DELETE", `/api/files/permanent?key=${encodeURIComponent(key)}`);
   }
   // ── Locks ─────────────────────────────────────────────────────────────────
   /**
@@ -801,20 +755,16 @@ function md5(buffer) {
   return Array.from(new Uint8Array(out.buffer)).map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 var SyncManager = class {
-  constructor(vault, api, tracker) {
+  constructor(vault, fileManager, api, tracker) {
     this.vault = vault;
+    this.fileManager = fileManager;
     this.api = api;
     this.tracker = tracker;
     this.state = EMPTY_SYNC_STATE;
     this.syncing = false;
     this.startupScanDone = false;
-    /**
-     * Controls how local deletions are handled on the server.
-     * - "non-permanent": file is moved to `_delete/` (recoverable via the Trash view).
-     * - "permanent": file is deleted and a tombstone is written (not recoverable).
-     * Defaults to "non-permanent". Updated by the plugin when settings change.
-     */
-    this.deletionStrategy = "non-permanent";
+    /** True when no sync-state.json was found on load — signals a fresh device. */
+    this.isNewDevice = false;
   }
   get stateFile() {
     return `${this.vault.configDir}/plugins/obsidian-syncagain/sync-state.json`;
@@ -827,6 +777,7 @@ var SyncManager = class {
       this.state = { ...EMPTY_SYNC_STATE, ...parsed };
     } catch (e) {
       this.state = { ...EMPTY_SYNC_STATE };
+      this.isNewDevice = true;
     }
   }
   async saveState() {
@@ -858,22 +809,52 @@ var SyncManager = class {
       console.error(`[SyncAgain] Failed to sync key '${key}':`, err);
     }
   }
+  // ── Sync cycle ─────────────────────────────────────────────────────────────
   /**
-   * Finalize a trash recovery: remove the key from `deletedFiles`, download
-   * the file from its restored remote path, and persist updated state.
-   * Called after the server has already moved `_delete/<key>` back to `<key>`.
+   * First-sync flow for a new device joining an account that already has files.
+   *
+   * Compares every local file against the remote list:
+   * - Same MD5        → pre-populate state; no transfer needed.
+   * - Different MD5   → collect as conflict; prompt user to keep local or remote.
+   * - Local only      → mark dirty; uploadLocalFile will push it.
+   * - Remote only     → left for reconcileRemote to download.
    */
-  async recoverKey(key) {
-    this.state.deletedFiles = this.state.deletedFiles.filter((k) => k !== key);
-    try {
-      await this.downloadKey(key);
-      await this.saveState();
-    } catch (err) {
-      console.error(`[SyncAgain] Failed to download recovered key '${key}':`, err);
-      throw err;
+  async runFirstSyncFlow(remoteFiles) {
+    const remoteMap = new Map(remoteFiles.map((f) => [f.key, f]));
+    const conflicts = [];
+    for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path))
+        continue;
+      const remote = remoteMap.get(file.path);
+      if (!remote) {
+        this.tracker.markDirtyByPath(file.path);
+        continue;
+      }
+      const data = await this.vault.readBinary(file);
+      const localMd5 = md5(data);
+      if (localMd5 === remote.md5) {
+        this.state.files[file.path] = {
+          md5: remote.md5,
+          syncedAt: Date.now(),
+          mtime: file.stat.mtime
+        };
+      } else {
+        conflicts.push({
+          path: file.path,
+          localMtime: file.stat.mtime,
+          remoteMtime: remote.last_modified
+        });
+      }
+    }
+    if (conflicts.length === 0)
+      return;
+    const keepLocalPaths = this.onFirstSyncConflict ? await this.onFirstSyncConflict(conflicts) : /* @__PURE__ */ new Set();
+    for (const conflict of conflicts) {
+      if (keepLocalPaths.has(conflict.path)) {
+        this.tracker.markDirtyByPath(conflict.path);
+      }
     }
   }
-  // ── Sync cycle ─────────────────────────────────────────────────────────────
   /**
    * On the first sync cycle, scan all vault files to detect changes that
    * occurred while the plugin was offline (no vault events were fired).
@@ -889,6 +870,8 @@ var SyncManager = class {
   detectOfflineChanges() {
     var _a;
     for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path))
+        continue;
       if (this.state.deletedFiles.includes(file.path))
         continue;
       const known = this.state.files[file.path];
@@ -904,9 +887,20 @@ var SyncManager = class {
   }
   async runSyncCycle() {
     if (!this.startupScanDone) {
-      this.detectOfflineChanges();
+      if (this.isNewDevice) {
+        const remoteFiles2 = await this.api.listFiles();
+        if (remoteFiles2.length > 0) {
+          await this.runFirstSyncFlow(remoteFiles2);
+        } else {
+          this.detectOfflineChanges();
+        }
+      } else {
+        this.detectOfflineChanges();
+      }
       this.startupScanDone = true;
     }
+    const remoteSnapshot = await this.api.listFiles();
+    const remoteSnapshotKeys = new Set(remoteSnapshot.map((f) => f.key));
     const deletedPaths = this.tracker.drainPendingDeletions();
     for (const path of deletedPaths) {
       try {
@@ -921,6 +915,8 @@ var SyncManager = class {
     for (const tracked of dirty) {
       if (this.state.deletedFiles.includes(tracked.path))
         continue;
+      if (this.state.files[tracked.path] && !remoteSnapshotKeys.has(tracked.path))
+        continue;
       try {
         await this.uploadLocalFile(tracked.path);
       } catch (err) {
@@ -933,6 +929,7 @@ var SyncManager = class {
     }
     const remoteFiles = await this.api.listFiles();
     await this.reconcileRemote(remoteFiles);
+    await this.uploadAbsentFiles(remoteFiles);
     await this.saveState();
   }
   // ── Upload ─────────────────────────────────────────────────────────────────
@@ -967,18 +964,11 @@ var SyncManager = class {
     }
   }
   /**
-   * Handle a locally deleted file according to the current deletion strategy.
+   * Handle a locally deleted file.
    *
-   * - "non-permanent": acquires a lock, moves the file to `_delete/<path>` on the
-   *   server (preserving it for recovery), and releases the lock. The `_delete/`
-   *   entry acts as the deletion signal to other clients — no zero-byte tombstone
-   *   is needed.
-   * - "permanent": acquires a lock, calls the permanent-delete endpoint which
-   *   removes the original and writes a `_deleted/<path>` zero-byte tombstone so
-   *   other clients propagate the deletion. The lock is released by the server.
-   *
-   * Files that were never uploaded to the server are marked deleted locally
-   * without any server call.
+   * Acquires a lock, deletes the file from the server, and releases the lock.
+   * Other clients detect the deletion via absence on the next reconcile cycle.
+   * Files that were never uploaded are marked deleted locally without a server call.
    */
   async handleDeletion(path) {
     if (!this.state.files[path]) {
@@ -998,11 +988,7 @@ var SyncManager = class {
       throw err;
     }
     try {
-      if (this.deletionStrategy === "non-permanent") {
-        await this.api.moveToTrash(path);
-      } else {
-        await this.api.permanentDeleteFile(path);
-      }
+      await this.api.deleteFile(path);
     } finally {
       try {
         await this.api.releaseLocks([path]);
@@ -1016,45 +1002,9 @@ var SyncManager = class {
   }
   // ── Download / reconcile ──────────────────────────────────────────────────
   async reconcileRemote(remoteFiles) {
-    const tombstonePrefix = "_deleted/";
-    const trashPrefix = "_delete/";
-    const currentlyDeletedOnServer = /* @__PURE__ */ new Set();
-    for (const remote of remoteFiles) {
-      if (remote.key.startsWith(tombstonePrefix)) {
-        currentlyDeletedOnServer.add(remote.key.slice(tombstonePrefix.length));
-      } else if (remote.key.startsWith(trashPrefix)) {
-        currentlyDeletedOnServer.add(remote.key.slice(trashPrefix.length));
-      }
-    }
-    if (remoteFiles.length > 0) {
-      this.state.deletedFiles = this.state.deletedFiles.filter(
-        (k) => currentlyDeletedOnServer.has(k)
-      );
-    }
     const deletedSet = new Set(this.state.deletedFiles);
-    const processedAsTombstone = /* @__PURE__ */ new Set();
-    for (const remote of remoteFiles) {
-      let originalKey = null;
-      if (remote.key.startsWith(tombstonePrefix)) {
-        originalKey = remote.key.slice(tombstonePrefix.length);
-      } else if (remote.key.startsWith(trashPrefix)) {
-        originalKey = remote.key.slice(trashPrefix.length);
-      }
-      if (!originalKey)
-        continue;
-      if (processedAsTombstone.has(originalKey))
-        continue;
-      processedAsTombstone.add(originalKey);
-      if (deletedSet.has(originalKey))
-        continue;
-      await this.deleteLocalFile(originalKey);
-    }
     const remoteKeys = new Set(remoteFiles.map((f) => f.key));
     for (const remote of remoteFiles) {
-      if (remote.key.startsWith(tombstonePrefix))
-        continue;
-      if (remote.key.startsWith(trashPrefix))
-        continue;
       if (deletedSet.has(remote.key))
         continue;
       const known = this.state.files[remote.key];
@@ -1069,6 +1019,30 @@ var SyncManager = class {
         if (!remoteKeys.has(key) && !deletedSet.has(key)) {
           await this.deleteLocalFile(key);
         }
+      }
+    }
+  }
+  // ── Upload absent files ────────────────────────────────────────────────────
+  /**
+   * Upload vault files that exist locally but have no corresponding entry on
+   * the server. This is a safety net for files that slipped through dirty
+   * tracking (e.g. created while sync was disabled) and a "flush" step run
+   * before sync is disabled.
+   */
+  async uploadAbsentFiles(remoteFiles) {
+    const remoteKeySet = new Set(remoteFiles.map((f) => f.key));
+    const deletedSet = new Set(this.state.deletedFiles);
+    for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path))
+        continue;
+      if (deletedSet.has(file.path))
+        continue;
+      if (remoteKeySet.has(file.path))
+        continue;
+      try {
+        await this.uploadLocalFile(file.path);
+      } catch (err) {
+        console.error(`[SyncAgain] Failed to upload absent file '${file.path}':`, err);
       }
     }
   }
@@ -1095,9 +1069,13 @@ var SyncManager = class {
     const file = this.vault.getFileByPath(key);
     if (file) {
       this.tracker.suppressNext(key);
-      await this.vault.delete(file);
+      await this.fileManager.trashFile(file);
     }
     delete this.state.files[key];
+  }
+  /** Returns true for paths that should never be synced (Obsidian's local trash folder). */
+  isExcluded(path) {
+    return path.startsWith(".trash/");
   }
   async ensureFolder(filePath) {
     const parts = filePath.split("/");
@@ -1198,7 +1176,7 @@ var EventListener = class {
 };
 
 // src/main.ts
-var SyncAgainPlugin = class extends import_obsidian4.Plugin {
+var SyncAgainPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.sseStatus = "disconnected";
@@ -1220,9 +1198,9 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
       this.settings.authToken || null,
       () => this.handleAuthFailure()
     );
-    this.syncManager = new SyncManager(this.app.vault, this.api, this.tracker);
+    this.syncManager = new SyncManager(this.app.vault, this.app.fileManager, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
-    this.syncManager.deletionStrategy = this.settings.deletionStrategy;
+    this.syncManager.onFirstSyncConflict = (conflicts) => showConflictResolutionModal(this.app, conflicts);
     this.eventListener = new EventListener(
       this.api,
       this.settings.clientId,
@@ -1242,7 +1220,7 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
       const userId = params["user_id"];
       const email = (_a = params["email"]) != null ? _a : "";
       if (!token || !userId) {
-        new import_obsidian4.Notice("Auth callback is missing token or user ID.");
+        new import_obsidian5.Notice("Auth callback is missing token or user ID.");
         return;
       }
       this.settings.authToken = token;
@@ -1250,7 +1228,7 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
       this.settings.userEmail = email;
       await this.saveSettings();
       this.api.setToken(token);
-      new import_obsidian4.Notice(`Signed in as ${email || userId}`);
+      new import_obsidian5.Notice(`Signed in as ${email || userId}`);
       if (this.settings.syncEnabled && this.settings.serverUrl) {
         this.restartSync();
       }
@@ -1319,7 +1297,7 @@ var SyncAgainPlugin = class extends import_obsidian4.Plugin {
     this.settings.userId = "";
     void this.saveSettings();
     this.stopSync();
-    new import_obsidian4.Notice(
+    new import_obsidian5.Notice(
       "Session expired or not signed in. Please sign in again in the plugin settings.",
       8e3
     );

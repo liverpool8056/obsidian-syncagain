@@ -1,8 +1,8 @@
-import { Vault } from "obsidian";
+import { FileManager, Vault } from "obsidian";
 
 import { ApiClient, ApiError } from "./api-client";
 import { FileTracker } from "./file-tracker";
-import { EMPTY_SYNC_STATE, LocalSyncState, RemoteFileEntry } from "./metadata";
+import { ConflictFile, EMPTY_SYNC_STATE, LocalSyncState, RemoteFileEntry } from "./metadata";
 
 // Pure-JS MD5 (RFC 1321) — avoids the Node.js 'crypto' module.
 function md5(buffer: ArrayBuffer): string {
@@ -75,26 +75,27 @@ function md5(buffer: ArrayBuffer): string {
  *   4. Persist local sync state.
  */
 export type SyncStatus = "syncing" | "idle" | "error";
-export type DeletionStrategy = "permanent" | "non-permanent";
 
 export class SyncManager {
   private state: LocalSyncState = EMPTY_SYNC_STATE;
   private syncing = false;
   private startupScanDone = false;
+  /** True when no sync-state.json was found on load — signals a fresh device. */
+  private isNewDevice = false;
 
   /** Set by the plugin to receive sync status updates for the status bar. */
   onStatus?: (status: SyncStatus) => void;
 
   /**
-   * Controls how local deletions are handled on the server.
-   * - "non-permanent": file is moved to `_delete/` (recoverable via the Trash view).
-   * - "permanent": file is deleted and a tombstone is written (not recoverable).
-   * Defaults to "non-permanent". Updated by the plugin when settings change.
+   * Set by the plugin to handle first-sync conflicts.
+   * Receives the list of conflicting files and returns the set of paths the
+   * user chose to keep local. Paths absent from the set keep the remote version.
    */
-  deletionStrategy: DeletionStrategy = "non-permanent";
+  onFirstSyncConflict?: (conflicts: ConflictFile[]) => Promise<Set<string>>;
 
   constructor(
     private readonly vault: Vault,
+    private readonly fileManager: FileManager,
     private readonly api: ApiClient,
     private readonly tracker: FileTracker,
   ) {}
@@ -112,6 +113,7 @@ export class SyncManager {
       this.state = { ...EMPTY_SYNC_STATE, ...parsed };
     } catch {
       this.state = { ...EMPTY_SYNC_STATE };
+      this.isNewDevice = true;
     }
   }
 
@@ -146,23 +148,61 @@ export class SyncManager {
     }
   }
 
+  // ── Sync cycle ─────────────────────────────────────────────────────────────
+
   /**
-   * Finalize a trash recovery: remove the key from `deletedFiles`, download
-   * the file from its restored remote path, and persist updated state.
-   * Called after the server has already moved `_delete/<key>` back to `<key>`.
+   * First-sync flow for a new device joining an account that already has files.
+   *
+   * Compares every local file against the remote list:
+   * - Same MD5        → pre-populate state; no transfer needed.
+   * - Different MD5   → collect as conflict; prompt user to keep local or remote.
+   * - Local only      → mark dirty; uploadLocalFile will push it.
+   * - Remote only     → left for reconcileRemote to download.
    */
-  async recoverKey(key: string): Promise<void> {
-    this.state.deletedFiles = this.state.deletedFiles.filter((k) => k !== key);
-    try {
-      await this.downloadKey(key);
-      await this.saveState();
-    } catch (err) {
-      console.error(`[SyncAgain] Failed to download recovered key '${key}':`, err);
-      throw err;
+  private async runFirstSyncFlow(remoteFiles: RemoteFileEntry[]): Promise<void> {
+    const remoteMap = new Map(remoteFiles.map((f) => [f.key, f]));
+
+    const conflicts: ConflictFile[] = [];
+
+    for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path)) continue;
+      const remote = remoteMap.get(file.path);
+      if (!remote) {
+        this.tracker.markDirtyByPath(file.path);
+        continue;
+      }
+
+      const data = await this.vault.readBinary(file);
+      const localMd5 = md5(data);
+
+      if (localMd5 === remote.md5) {
+        this.state.files[file.path] = {
+          md5: remote.md5,
+          syncedAt: Date.now(),
+          mtime: file.stat.mtime,
+        };
+      } else {
+        conflicts.push({
+          path: file.path,
+          localMtime: file.stat.mtime,
+          remoteMtime: remote.last_modified,
+        });
+      }
+    }
+
+    if (conflicts.length === 0) return;
+
+    const keepLocalPaths = this.onFirstSyncConflict
+      ? await this.onFirstSyncConflict(conflicts)
+      : new Set<string>(); // default: keep remote
+
+    for (const conflict of conflicts) {
+      if (keepLocalPaths.has(conflict.path)) {
+        this.tracker.markDirtyByPath(conflict.path);
+      }
+      // keep remote: reconcileRemote will download and overwrite the local file
     }
   }
-
-  // ── Sync cycle ─────────────────────────────────────────────────────────────
 
   /**
    * On the first sync cycle, scan all vault files to detect changes that
@@ -178,6 +218,7 @@ export class SyncManager {
    */
   private detectOfflineChanges(): void {
     for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path)) continue;
       if (this.state.deletedFiles.includes(file.path)) continue;
       const known = this.state.files[file.path];
       if (!known || file.stat.mtime > (known.mtime ?? 0)) {
@@ -193,9 +234,24 @@ export class SyncManager {
 
   private async runSyncCycle(): Promise<void> {
     if (!this.startupScanDone) {
-      this.detectOfflineChanges();
+      if (this.isNewDevice) {
+        const remoteFiles = await this.api.listFiles();
+        if (remoteFiles.length > 0) {
+          await this.runFirstSyncFlow(remoteFiles);
+        } else {
+          this.detectOfflineChanges();
+        }
+      } else {
+        this.detectOfflineChanges();
+      }
       this.startupScanDone = true;
     }
+
+    // Snapshot of the remote file set taken before any uploads.
+    // Used below to detect files deleted by another client while this device
+    // was offline, so we don't blindly re-upload them.
+    const remoteSnapshot = await this.api.listFiles();
+    const remoteSnapshotKeys = new Set(remoteSnapshot.map((f) => f.key));
 
     // Step 1 — handle locally deleted files.
     const deletedPaths = this.tracker.drainPendingDeletions();
@@ -215,6 +271,10 @@ export class SyncManager {
     for (const tracked of dirty) {
       // Skip if user deleted this file before the upload ran.
       if (this.state.deletedFiles.includes(tracked.path)) continue;
+      // Skip if the file was previously synced but is now absent from the server —
+      // another client deleted it while this device was offline. Let reconcileRemote
+      // propagate the deletion locally instead of re-uploading a stale copy.
+      if (this.state.files[tracked.path] && !remoteSnapshotKeys.has(tracked.path)) continue;
       try {
         await this.uploadLocalFile(tracked.path);
       } catch (err) {
@@ -228,9 +288,12 @@ export class SyncManager {
       this.tracker.markDirtyByPath(path);
     }
 
-    // Step 3 & 4 — reconcile with remote.
+    // Fresh fetch after uploads so reconcileRemote sees our own changes.
     const remoteFiles = await this.api.listFiles();
     await this.reconcileRemote(remoteFiles);
+
+    // Step 6 — upload local files absent on server.
+    await this.uploadAbsentFiles(remoteFiles);
 
     await this.saveState();
   }
@@ -274,18 +337,11 @@ export class SyncManager {
   }
 
   /**
-   * Handle a locally deleted file according to the current deletion strategy.
+   * Handle a locally deleted file.
    *
-   * - "non-permanent": acquires a lock, moves the file to `_delete/<path>` on the
-   *   server (preserving it for recovery), and releases the lock. The `_delete/`
-   *   entry acts as the deletion signal to other clients — no zero-byte tombstone
-   *   is needed.
-   * - "permanent": acquires a lock, calls the permanent-delete endpoint which
-   *   removes the original and writes a `_deleted/<path>` zero-byte tombstone so
-   *   other clients propagate the deletion. The lock is released by the server.
-   *
-   * Files that were never uploaded to the server are marked deleted locally
-   * without any server call.
+   * Acquires a lock, deletes the file from the server, and releases the lock.
+   * Other clients detect the deletion via absence on the next reconcile cycle.
+   * Files that were never uploaded are marked deleted locally without a server call.
    */
   private async handleDeletion(path: string): Promise<void> {
     // If the file was never uploaded, just mark it deleted locally.
@@ -308,15 +364,8 @@ export class SyncManager {
     }
 
     try {
-      if (this.deletionStrategy === "non-permanent") {
-        await this.api.moveToTrash(path);
-        // Server releases the lock on success.
-      } else {
-        await this.api.permanentDeleteFile(path);
-        // Server releases the lock on success.
-      }
+      await this.api.deleteFile(path);
     } finally {
-      // Best-effort release in case of a server-side error.
       try { await this.api.releaseLocks([path]); } catch { /* ignore */ }
     }
 
@@ -329,69 +378,16 @@ export class SyncManager {
   // ── Download / reconcile ──────────────────────────────────────────────────
 
   private async reconcileRemote(remoteFiles: RemoteFileEntry[]): Promise<void> {
-    const tombstonePrefix = "_deleted/";
-    const trashPrefix = "_delete/";
-
-    // Build the set of keys that are currently in trash or have a tombstone on
-    // the server. Used below to auto-revive locally-deleted entries whose
-    // server-side deletion marker is gone (i.e. the file was recovered).
-    const currentlyDeletedOnServer = new Set<string>();
-    for (const remote of remoteFiles) {
-      if (remote.key.startsWith(tombstonePrefix)) {
-        currentlyDeletedOnServer.add(remote.key.slice(tombstonePrefix.length));
-      } else if (remote.key.startsWith(trashPrefix)) {
-        currentlyDeletedOnServer.add(remote.key.slice(trashPrefix.length));
-      }
-    }
-
-    // Auto-revive: if a key was locally deleted but the server no longer has a
-    // trash/tombstone entry for it (meaning it was recovered), remove it from
-    // deletedFiles so the download loop can pick it up again.
-    // Guard against clearing the list when the server returns nothing (transient
-    // error) — only revive when we got a real response.
-    if (remoteFiles.length > 0) {
-      this.state.deletedFiles = this.state.deletedFiles.filter((k) =>
-        currentlyDeletedOnServer.has(k),
-      );
-    }
-
-    // Only files the user explicitly deleted on this device — used to prevent
-    // re-downloading intentional local deletions.
+    // Files the user intentionally deleted on this device — skip re-downloading.
     const deletedSet = new Set(this.state.deletedFiles);
-
-    // Process deletion signals from other clients:
-    //   _deleted/<key>  — permanent delete tombstone (zero-byte file)
-    //   _delete/<key>   — non-permanent delete (file moved to trash by another client)
-    // Both mean: delete the local copy.
-    // We intentionally do NOT add these to state.deletedFiles so that if the file
-    // is later restored on the server it will be picked up by the download loop.
-
-    const processedAsTombstone = new Set<string>();
-    for (const remote of remoteFiles) {
-      let originalKey: string | null = null;
-      if (remote.key.startsWith(tombstonePrefix)) {
-        originalKey = remote.key.slice(tombstonePrefix.length);
-      } else if (remote.key.startsWith(trashPrefix)) {
-        originalKey = remote.key.slice(trashPrefix.length);
-      }
-      if (!originalKey) continue;
-      if (processedAsTombstone.has(originalKey)) continue; // dedup within this cycle
-      processedAsTombstone.add(originalKey);
-      if (deletedSet.has(originalKey)) continue; // user already deleted this locally
-      await this.deleteLocalFile(originalKey);
-    }
-
     const remoteKeys = new Set(remoteFiles.map((f) => f.key));
 
     // Download files that are new or changed on the server, or missing locally.
-    // Skip deletion-signal keys and files the user deleted on this client.
     for (const remote of remoteFiles) {
-      if (remote.key.startsWith(tombstonePrefix)) continue;
-      if (remote.key.startsWith(trashPrefix)) continue;
       if (deletedSet.has(remote.key)) continue;
       const known = this.state.files[remote.key];
       const existsLocally = Boolean(this.vault.getFileByPath(remote.key));
-      if (known?.md5 === remote.md5 && existsLocally) continue; // already in sync
+      if (known?.md5 === remote.md5 && existsLocally) continue;
       await this.downloadKey(remote.key, remote);
     }
 
@@ -404,6 +400,29 @@ export class SyncManager {
         if (!remoteKeys.has(key) && !deletedSet.has(key)) {
           await this.deleteLocalFile(key);
         }
+      }
+    }
+  }
+
+  // ── Upload absent files ────────────────────────────────────────────────────
+
+  /**
+   * Upload vault files that exist locally but have no corresponding entry on
+   * the server. This is a safety net for files that slipped through dirty
+   * tracking (e.g. created while sync was disabled) and a "flush" step run
+   * before sync is disabled.
+   */
+  private async uploadAbsentFiles(remoteFiles: RemoteFileEntry[]): Promise<void> {
+    const remoteKeySet = new Set(remoteFiles.map((f) => f.key));
+    const deletedSet = new Set(this.state.deletedFiles);
+    for (const file of this.vault.getFiles()) {
+      if (this.isExcluded(file.path)) continue;
+      if (deletedSet.has(file.path)) continue;
+      if (remoteKeySet.has(file.path)) continue;
+      try {
+        await this.uploadLocalFile(file.path);
+      } catch (err) {
+        console.error(`[SyncAgain] Failed to upload absent file '${file.path}':`, err);
       }
     }
   }
@@ -435,9 +454,14 @@ export class SyncManager {
     const file = this.vault.getFileByPath(key);
     if (file) {
       this.tracker.suppressNext(key);
-      await this.vault.delete(file);
+      await this.fileManager.trashFile(file);
     }
     delete this.state.files[key];
+  }
+
+  /** Returns true for paths that should never be synced (Obsidian's local trash folder). */
+  private isExcluded(path: string): boolean {
+    return path.startsWith(".trash/");
   }
 
   private async ensureFolder(filePath: string): Promise<void> {

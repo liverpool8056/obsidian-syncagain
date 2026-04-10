@@ -27,6 +27,7 @@ export class FileTracker {
 
   markDirty(file: TAbstractFile): void {
     if (!(file instanceof TFile)) return;
+    if (file.path.startsWith(".trash/")) return;
     if (this.suppressOnce.delete(file.path)) return;
     this.dirtyFiles.set(file.path, {
       path: file.path,
@@ -35,6 +36,7 @@ export class FileTracker {
   }
 
   markDirtyByPath(path: string): void {
+    if (path.startsWith(".trash/")) return;
     this.dirtyFiles.set(path, { path, modifiedAt: Date.now() });
   }
 

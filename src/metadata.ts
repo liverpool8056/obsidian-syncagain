@@ -1,3 +1,10 @@
+/** A file that exists on both sides with different content, requiring user resolution. */
+export interface ConflictFile {
+  path: string;
+  localMtime: number;   // ms timestamp
+  remoteMtime: string;  // ISO-8601 from RemoteFileEntry.last_modified
+}
+
 /** Remote file entry returned by GET /api/files */
 export interface RemoteFileEntry {
   key: string;

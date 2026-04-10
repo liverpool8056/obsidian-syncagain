@@ -10,6 +10,7 @@ An Obsidian plugin for bidirectional vault synchronization via a sync server. Mu
 - **Content-based diffing** — MD5 comparison avoids redundant transfers
 - **Per-user accounts** — individual email/password accounts with JWT authentication
 - **Trash & recovery** — non-permanent deletions are recoverable; permanent deletion option also available
+- **Safe first-sync for new devices** — when a new device joins an account that already has files, conflicting files are surfaced in a resolution modal rather than silently overwritten
 
 ## How it works
 
@@ -61,7 +62,7 @@ Open Settings → SyncAgain:
 | **Account** | Sign up (opens browser) or sign in inline with email + password |
 | **Sync interval** | How often (in minutes) to run a full sync cycle (default: 5) |
 | **Enable sync** | Toggle to pause sync without changing other settings |
-| **Deletion strategy** | `Non-permanent` (recoverable, moved to trash) or `Permanent` (no recovery) |
+| **Deletion strategy** | Controlled by Obsidian's own trash setting (system trash or `.trash` folder) |
 
 The plugin auto-generates a unique **Client ID** (UUID) per device, shown in settings for debugging.
 
@@ -73,16 +74,30 @@ The plugin auto-generates a unique **Client ID** (UUID) per device, shown in set
 
 A signed-in user's email is shown in the settings tab. Token expiry (30 days by default) shows a notice asking you to sign in again.
 
-### Deletion strategies
+### Deletion behaviour
 
-| Strategy | Behaviour |
+When you delete a file in Obsidian, the plugin deletes it from the remote server so other devices propagate the deletion on their next sync cycle. Where the file ends up locally is determined by Obsidian's own **Files & Links → Deleted files** setting:
+
+| Obsidian setting | Local behaviour |
 | --- | --- |
-| **Non-permanent** | File is moved to server-side trash (`_delete/` prefix); recoverable via the Trash view in settings |
-| **Permanent** | File is deleted and a tombstone is written (`_deleted/` prefix); not recoverable |
+| **Move to system trash** | File goes to the OS trash (recoverable via the OS) |
+| **Move to .trash folder** | File goes to `.trash/` inside the vault (recoverable manually) |
+| **Permanently delete** | File is removed immediately (no recovery) |
 
-The **Trash** section in settings lists trashed files with **Recover** and **Delete permanently** buttons.
+The `.trash/` folder is excluded from sync and is never uploaded to the server.
 
 ## Sync behaviour
+
+### First sync on a new device
+
+When the plugin starts on a device with no prior sync state, it checks whether the remote already has files:
+
+- **Remote is empty** — the device is the first to join the account. All local files are uploaded unconditionally.
+- **Remote has files** — the device is joining an existing account. Local files are compared against the remote by MD5:
+  - **Same content** — no transfer; local state is seeded from remote.
+  - **Local only** — file is uploaded to the server.
+  - **Remote only** — file is downloaded to the vault.
+  - **Different content (conflict)** — a resolution modal is shown listing all conflicting files with their local and remote modification times. The user chooses **Keep local** (upload local version) or **Keep remote** (download remote version) for all conflicts at once. If the modal is dismissed without choosing, a confirmation prompt explains that remote is the authoritative source and defaults to keeping the remote version.
 
 ### Upload
 
@@ -101,6 +116,18 @@ After uploading, the manager fetches the full remote file list and compares MD5 
 ### Deletions
 
 Files present in the last local sync state but absent from the current remote list are deleted from the vault locally.
+
+### Reconnect after being offline
+
+When a device that already has a sync state reconnects, it performs a startup scan before the first upload cycle:
+
+- **Files modified while offline** — marked dirty; will be uploaded unless a remote deletion is detected (see below).
+- **Files created while offline** (not in sync state) — uploaded unconditionally.
+- **Files deleted locally while offline** — deletion is propagated to the server.
+
+**Remote deletion takes priority over local edits.** If another client deleted a file on the server while this device was offline, the offline device will *not* re-upload it even if it was modified locally — the remote deletion wins. `reconcileRemote` then removes the local copy. Any unsaved local changes to that file are lost. Recovery is the user's responsibility (OS trash or Obsidian's `.trash/` folder depending on the deletion settings).
+
+This behaviour is intentional: the server is the authoritative source, and recovery is delegated to the OS/Obsidian trash mechanism rather than maintained server-side.
 
 ### Real-time push
 
@@ -145,13 +172,14 @@ Then reload Obsidian or use the "Reload plugin" action.
 
 ```text
 src/
-├── main.ts            # Plugin entry point — lifecycle, event wiring, auth callback handler
-├── settings.ts        # Settings interface, SettingTab UI, account management, trash view
-├── file-tracker.ts    # Tracks dirty files between sync cycles (last-write-wins per path)
-├── sync-manager.ts    # Orchestrates upload / download / reconcile
-├── api-client.ts      # Typed HTTP client with JWT auth, file/lock/trash/SSE APIs
-├── event-listener.ts  # SSE connection manager with exponential-backoff reconnect
-└── metadata.ts        # Type definitions (RemoteFileEntry, LocalSyncState, SyncEvent)
+├── main.ts              # Plugin entry point — lifecycle, event wiring, auth callback handler
+├── settings.ts          # Settings interface, SettingTab UI, account management, trash view
+├── file-tracker.ts      # Tracks dirty files between sync cycles (last-write-wins per path)
+├── sync-manager.ts      # Orchestrates upload / download / reconcile
+├── api-client.ts        # Typed HTTP client with JWT auth, file/lock/trash/SSE APIs
+├── event-listener.ts    # SSE connection manager with exponential-backoff reconnect
+├── first-sync-modal.ts  # Conflict resolution modal shown on first sync of a new device
+└── metadata.ts          # Type definitions (RemoteFileEntry, LocalSyncState, ConflictFile, SyncEvent)
 ```
 
 ## Known limitations
