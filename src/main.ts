@@ -28,6 +28,11 @@ export default class SyncAgainPlugin extends Plugin {
     // Ensure a stable client ID exists.
     if (!this.settings.clientId) {
       this.settings.clientId = crypto.randomUUID();
+      // New installation — generate a stable vault UUID so multi-vault
+      // support works out of the box and survives vault renames.
+      if (!this.settings.vaultId) {
+        this.settings.vaultId = crypto.randomUUID();
+      }
       await this.saveSettings();
     }
 
@@ -41,6 +46,7 @@ export default class SyncAgainPlugin extends Plugin {
       this.settings.authToken || null,
       () => this.handleAuthFailure(),
     );
+    this.api.setVaultId(this.settings.vaultId);
     this.syncManager = new SyncManager(this.app.vault, this.app.fileManager, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
     this.syncManager.onFirstSyncConflict = (conflicts) =>
@@ -49,12 +55,15 @@ export default class SyncAgainPlugin extends Plugin {
       this.api,
       this.settings.clientId,
       (event) => {
-        if (event.key) {
-          if (event.event === "file_changed") {
-            void this.syncManager.syncKey(event.key);
-          } else if (event.event === "file_deleted") {
-            // Let the next full sync cycle handle the deletion.
-          }
+        if (!event.key) return;
+        // resolveEventKey strips the vault prefix and returns null for keys
+        // that belong to a different vault on the same account.
+        const localKey = this.api.resolveEventKey(event.key);
+        if (localKey === null) return;
+        if (event.event === "file_changed") {
+          void this.syncManager.syncKey(localKey);
+        } else if (event.event === "file_deleted") {
+          // Let the next full sync cycle handle the deletion.
         }
       },
       (status) => this.onSseStatus(status),
@@ -123,6 +132,8 @@ export default class SyncAgainPlugin extends Plugin {
   startSync(): void {
     if (!this.settings.authToken) return;
     this.stopSync();
+    // Keep the server's vault_id → folder name mapping current.
+    void this.api.registerVault(this.app.vault.getName());
     const intervalMs = this.settings.syncIntervalMinutes * 60 * 1000;
     void this.syncManager.sync();
     this.syncIntervalId = window.setInterval(() => { void this.syncManager.sync(); }, intervalMs);

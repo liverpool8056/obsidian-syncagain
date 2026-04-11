@@ -117,6 +117,7 @@ var DEFAULT_SETTINGS = {
   clientId: "",
   syncIntervalMinutes: 5,
   syncEnabled: true,
+  vaultId: "",
   userId: "",
   userEmail: "",
   authToken: ""
@@ -259,6 +260,16 @@ var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
+    new import_obsidian2.Setting(containerEl).setName("Vault ID").setDesc(
+      "Namespace for this vault's files on the server. Set a unique value per vault when syncing multiple vaults to the same account. Leave blank to use no prefix (legacy single-vault behaviour)."
+    ).addText(
+      (text) => text.setPlaceholder("(no prefix)").setValue(this.plugin.settings.vaultId).onChange(async (value) => {
+        this.plugin.settings.vaultId = value.trim();
+        await this.plugin.saveSettings();
+        this.plugin.api.setVaultId(value.trim());
+        this.plugin.restartSync();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName("Info").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
       (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
@@ -372,6 +383,7 @@ var ApiClient = class {
     this.serverUrl = serverUrl;
     this.clientId = clientId;
     this.onAuthFailure = onAuthFailure;
+    this.vaultId = "";
     this.token = token || null;
   }
   /** Replace the cached token (e.g. after sign-in via URI callback). */
@@ -381,6 +393,30 @@ var ApiClient = class {
   /** Discard the cached token (e.g. on sign-out). */
   invalidateToken() {
     this.token = null;
+  }
+  /** Set the vault namespace prefix used for all file keys. */
+  setVaultId(id) {
+    this.vaultId = id;
+  }
+  /**
+   * Convert a vault-local key to the server-side key by prepending the vault prefix.
+   * When vaultId is empty, the key is returned unchanged (legacy single-vault behaviour).
+   */
+  remoteKey(key) {
+    return this.vaultId ? `${this.vaultId}/${key}` : key;
+  }
+  /**
+   * Given a key from an SSE event (server-side, post user-prefix strip), return the
+   * vault-local key, or null if the key does not belong to this vault.
+   * When vaultId is empty, any key is accepted unchanged.
+   */
+  resolveEventKey(key) {
+    if (!this.vaultId)
+      return key;
+    const prefix = `${this.vaultId}/`;
+    if (!key.startsWith(prefix))
+      return null;
+    return key.slice(prefix.length);
   }
   // ── Auth ────────────────────────────────────────────────────────────────
   /**
@@ -444,10 +480,35 @@ var ApiClient = class {
       return void 0;
     return res.json;
   }
+  // ── Vault registry ───────────────────────────────────────────────────────
+  /**
+   * Register or update the folder name for this vault on the server.
+   * Called on every sync start so the server's vault_id → vault_name mapping
+   * stays current even after an OS-level vault folder rename.
+   *
+   * Silently no-ops when vaultId is empty (legacy single-vault mode).
+   */
+  async registerVault(vaultName) {
+    if (!this.vaultId)
+      return;
+    try {
+      await this.request(
+        "PUT",
+        `/api/vaults/${encodeURIComponent(this.vaultId)}`,
+        JSON.stringify({ name: vaultName }),
+        { "Content-Type": "application/json" }
+      );
+    } catch (err) {
+      console.warn("[SyncAgain] Failed to register vault name:", err);
+    }
+  }
   // ── Files ────────────────────────────────────────────────────────────────
   async listFiles() {
     const data = await this.request("GET", "/api/files");
-    return data.files;
+    if (!this.vaultId)
+      return data.files;
+    const prefix = `${this.vaultId}/`;
+    return data.files.filter((f) => f.key.startsWith(prefix)).map((f) => ({ ...f, key: f.key.slice(prefix.length) }));
   }
   async downloadFile(key) {
     var _a, _b;
@@ -456,7 +517,7 @@ var ApiClient = class {
       throw new ApiError(401, "Not signed in.");
     }
     const res = await (0, import_obsidian4.requestUrl)({
-      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
+      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(this.remoteKey(key))}`,
       headers: { Authorization: `Bearer ${this.token}` },
       throw: false
     });
@@ -476,18 +537,19 @@ var ApiClient = class {
       (_a = this.onAuthFailure) == null ? void 0 : _a.call(this);
       throw new ApiError(401, "Not signed in.");
     }
+    const serverKey = this.remoteKey(key);
     const boundary = `----SyncAgainBoundary${Date.now()}`;
     const enc = new TextEncoder();
     const keyPart = enc.encode(
       `--${boundary}\r
 Content-Disposition: form-data; name="key"\r
 \r
-${key}\r
+${serverKey}\r
 `
     );
     const fileHeader = enc.encode(
       `--${boundary}\r
-Content-Disposition: form-data; name="file"; filename="${key}"\r
+Content-Disposition: form-data; name="file"; filename="${serverKey}"\r
 Content-Type: ${contentType}\r
 \r
 `
@@ -527,7 +589,7 @@ Content-Type: ${contentType}\r
   }
   /** Delete `key` on the server. The caller must hold the lock. */
   async deleteFile(key) {
-    await this.request("DELETE", `/api/files?key=${encodeURIComponent(key)}`);
+    await this.request("DELETE", `/api/files?key=${encodeURIComponent(this.remoteKey(key))}`);
   }
   // ── Locks ─────────────────────────────────────────────────────────────────
   /**
@@ -538,7 +600,7 @@ Content-Type: ${contentType}\r
     await this.request(
       "POST",
       "/api/locks",
-      JSON.stringify({ client_id: this.clientId, files: keys }),
+      JSON.stringify({ client_id: this.clientId, files: keys.map((k) => this.remoteKey(k)) }),
       { "Content-Type": "application/json" }
     );
   }
@@ -546,7 +608,7 @@ Content-Type: ${contentType}\r
     await this.request(
       "DELETE",
       "/api/locks",
-      JSON.stringify({ client_id: this.clientId, files: keys }),
+      JSON.stringify({ client_id: this.clientId, files: keys.map((k) => this.remoteKey(k)) }),
       { "Content-Type": "application/json" }
     );
   }
@@ -1187,6 +1249,9 @@ var SyncAgainPlugin = class extends import_obsidian5.Plugin {
     await this.loadSettings();
     if (!this.settings.clientId) {
       this.settings.clientId = crypto.randomUUID();
+      if (!this.settings.vaultId) {
+        this.settings.vaultId = crypto.randomUUID();
+      }
       await this.saveSettings();
     }
     this.statusBarEl = this.addStatusBarItem();
@@ -1198,6 +1263,7 @@ var SyncAgainPlugin = class extends import_obsidian5.Plugin {
       this.settings.authToken || null,
       () => this.handleAuthFailure()
     );
+    this.api.setVaultId(this.settings.vaultId);
     this.syncManager = new SyncManager(this.app.vault, this.app.fileManager, this.api, this.tracker);
     this.syncManager.onStatus = (status) => this.updateStatusBar(status);
     this.syncManager.onFirstSyncConflict = (conflicts) => showConflictResolutionModal(this.app, conflicts);
@@ -1205,11 +1271,14 @@ var SyncAgainPlugin = class extends import_obsidian5.Plugin {
       this.api,
       this.settings.clientId,
       (event) => {
-        if (event.key) {
-          if (event.event === "file_changed") {
-            void this.syncManager.syncKey(event.key);
-          } else if (event.event === "file_deleted") {
-          }
+        if (!event.key)
+          return;
+        const localKey = this.api.resolveEventKey(event.key);
+        if (localKey === null)
+          return;
+        if (event.event === "file_changed") {
+          void this.syncManager.syncKey(localKey);
+        } else if (event.event === "file_deleted") {
         }
       },
       (status) => this.onSseStatus(status)
@@ -1266,6 +1335,7 @@ var SyncAgainPlugin = class extends import_obsidian5.Plugin {
     if (!this.settings.authToken)
       return;
     this.stopSync();
+    void this.api.registerVault(this.app.vault.getName());
     const intervalMs = this.settings.syncIntervalMinutes * 60 * 1e3;
     void this.syncManager.sync();
     this.syncIntervalId = window.setInterval(() => {
