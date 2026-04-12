@@ -29,6 +29,10 @@ First version released. Bidirectional vault sync plugin with upload, download, a
 - SSE events for files belonging to a different vault on the same account are silently ignored.
 - On every sync start the plugin reports the current folder name to the server (`PUT /api/vaults/{vault_id}`), keeping the server-side `vault_id → folder name` mapping up to date.
 - A **Vault ID** field is available in Settings → Sync for manual overrides. Existing installs default to an empty Vault ID (no prefix) and are fully backward compatible.
+5. Settings tab redesign:
+- The **Server URL** setting is renamed to **Server**. The connection status badge is now displayed inline next to the setting name instead of in a separate Connection row.
+- Removed the standalone User ID, Vault ID, and Device ID (Info section) fields from the settings tab. These details are accessible via the server's account page instead.
+- Added an **Account detail** button in the signed-in state that opens the browser to the server's `/account` page, showing storage usage, registered vaults, associated devices, and plan info.
 
 #### Bug Fixes
 

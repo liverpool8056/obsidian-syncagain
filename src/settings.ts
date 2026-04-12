@@ -56,10 +56,8 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     // ── Server ──────────────────────────────────────────────────────────────
 
-    new Setting(containerEl).setName("Server").setHeading();
-
-    new Setting(containerEl)
-      .setName("Server URL")
+    const serverUrlSetting = new Setting(containerEl)
+      .setName("Server")
       .setDesc('Base URL of the sync server, e.g. "http://localhost:8080"')
       .addText((text) =>
         text
@@ -71,11 +69,8 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             this.plugin.restartSync();
           }),
       );
-
-    const connSetting = new Setting(containerEl)
-      .setName("Connection");
-    this.connectionStatusEl = connSetting.controlEl.createEl("span", {
-      cls: "syncagain-conn-status",
+    this.connectionStatusEl = serverUrlSetting.nameEl.createEl("span", {
+      cls: "syncagain-badge",
     });
     this.renderConnectionStatus(this.plugin.sseStatus);
 
@@ -91,6 +86,12 @@ export class SyncAgainSettingTab extends PluginSettingTab {
         .setName("Signed in")
         .setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId)
         .addButton((btn) =>
+          btn.setButtonText("Account detail").onClick(() => {
+            const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
+            window.open(`${base}/account`);
+          }),
+        )
+        .addButton((btn) =>
           btn
             .setButtonText("Sign out")
             .setWarning()
@@ -104,12 +105,6 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             }),
         );
 
-      new Setting(containerEl)
-        .setName("User ID")
-        .setDesc("Your account ID on the server (read-only).")
-        .addText((text) =>
-          text.setValue(this.plugin.settings.userId).setDisabled(true),
-        );
     } else {
       // ── Signed-out state ───────────────────────────────────────────────────
 
@@ -249,35 +244,6 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName("Vault ID")
-      .setDesc(
-        "Namespace for this vault's files on the server. " +
-        "Set a unique value per vault when syncing multiple vaults to the same account. " +
-        "Leave blank to use no prefix (legacy single-vault behaviour).",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("(no prefix)")
-          .setValue(this.plugin.settings.vaultId)
-          .onChange(async (value) => {
-            this.plugin.settings.vaultId = value.trim();
-            await this.plugin.saveSettings();
-            this.plugin.api.setVaultId(value.trim());
-            this.plugin.restartSync();
-          }),
-      );
-
-    // ── Info ────────────────────────────────────────────────────────────────
-
-    new Setting(containerEl).setName("Info").setHeading();
-
-    new Setting(containerEl)
-      .setName("Device ID")
-      .setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).")
-      .addText((text) =>
-        text.setValue(this.plugin.settings.clientId).setDisabled(true),
-      );
   }
 
   // ── Connection status ──────────────────────────────────────────────────────
@@ -290,16 +256,14 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
   private renderConnectionStatus(status: ConnectionStatus): void {
     if (!this.connectionStatusEl) return;
-    const labels: Record<ConnectionStatus, string> = {
-      connected: "Connected",
-      connecting: "Connecting…",
-      disconnected: "Disconnected",
+    const config: Record<ConnectionStatus, { label: string; color: string }> = {
+      connected:    { label: "Connected",    color: "syncagain-badge-green"  },
+      connecting:   { label: "Connecting…",  color: "syncagain-badge-yellow" },
+      disconnected: { label: "Disconnected", color: "syncagain-badge-gray"   },
     };
-    this.connectionStatusEl.setText(labels[status]);
-    this.connectionStatusEl.setAttribute(
-      "class",
-      `syncagain-conn-status syncagain-conn-status--${status}`,
-    );
+    const { label, color } = config[status];
+    this.connectionStatusEl.setText(label);
+    this.connectionStatusEl.setAttribute("class", `syncagain-badge ${color}`);
   }
 
 }

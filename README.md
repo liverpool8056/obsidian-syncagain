@@ -44,7 +44,7 @@ A persistent SSE connection (`EventListener`) receives push events from the serv
 
 ### Manual installation
 
-1. Download `main.js`, `manifest.json`, and `versions.json` from the [latest release](https://github.com/liverpool8056/obsidian-syncagain/releases/latest).
+1. Download `main.js`, `manifest.json`, `versions.json`, and `styles.css` from the [latest release](https://github.com/liverpool8056/obsidian-syncagain/releases/latest).
 2. Copy them to:
 
    ```text
@@ -59,19 +59,17 @@ Open Settings → SyncAgain:
 
 | Setting | Description |
 | --- | --- |
-| **Server URL** | Base URL of your sync server, e.g. `http://192.168.1.10:8080` |
+| **Server** | Base URL of your sync server, e.g. `http://192.168.1.10:8080` |
 | **Account** | Sign up (opens browser) or sign in inline with email + password |
 | **Enable sync** | Toggle to pause sync without changing other settings |
 | **Sync interval** | How often (in minutes) to run a full sync cycle (default: 5) |
-| **Vault ID** | Namespace for this vault's files on the server (see [Multi-vault support](#multi-vault-support)) |
 | **Deletion strategy** | Controlled by Obsidian's own trash setting (system trash or `.trash` folder) |
-
-The plugin auto-generates a unique **Client ID** (UUID) per device, shown in settings for debugging.
 
 ### Account management
 
 - **Create account** — opens your browser to the server's registration page; on completion the server redirects back to Obsidian with a JWT.
 - **Sign in** — enter email and password directly in the settings tab.
+- **Account detail** — opens your browser to the server's account page showing storage usage, registered vaults, associated devices, and plan info.
 - **Sign out** — clears the stored token and stops sync.
 
 A signed-in user's email is shown in the settings tab. Token expiry (30 days by default) shows a notice asking you to sign in again.
@@ -147,7 +145,7 @@ To set up a second vault on the same account:
 2. Sign in with the same account credentials.
 3. Each vault will have its own auto-generated Vault ID — no additional configuration needed.
 
-The **Vault ID** field in settings is editable if you need to migrate files or match an existing namespace. Leave it blank only for legacy single-vault setups that pre-date this feature.
+The Vault ID is managed automatically and requires no manual configuration.
 
 ## Development
 
@@ -179,7 +177,7 @@ Output: `main.js` in the project root.
 
 ```bash
 mkdir -p /path/to/vault/.obsidian/plugins/obsidian-syncagain
-cp main.js manifest.json versions.json /path/to/vault/.obsidian/plugins/obsidian-syncagain/
+cp main.js manifest.json versions.json styles.css /path/to/vault/.obsidian/plugins/obsidian-syncagain/
 ```
 
 Then reload Obsidian or use the "Reload plugin" action.

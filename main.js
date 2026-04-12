@@ -135,23 +135,26 @@ var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian2.Setting(containerEl).setName("Server").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Server URL").setDesc('Base URL of the sync server, e.g. "http://localhost:8080"').addText(
+    const serverUrlSetting = new import_obsidian2.Setting(containerEl).setName("Server").setDesc('Base URL of the sync server, e.g. "http://localhost:8080"').addText(
       (text) => text.setPlaceholder("").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
         this.plugin.restartSync();
       })
     );
-    const connSetting = new import_obsidian2.Setting(containerEl).setName("Connection");
-    this.connectionStatusEl = connSetting.controlEl.createEl("span", {
-      cls: "syncagain-conn-status"
+    this.connectionStatusEl = serverUrlSetting.nameEl.createEl("span", {
+      cls: "syncagain-badge"
     });
     this.renderConnectionStatus(this.plugin.sseStatus);
     new import_obsidian2.Setting(containerEl).setName("Account").setHeading();
     const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
     if (isSignedIn) {
       new import_obsidian2.Setting(containerEl).setName("Signed in").setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId).addButton(
+        (btn) => btn.setButtonText("Account detail").onClick(() => {
+          const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
+          window.open(`${base}/account`);
+        })
+      ).addButton(
         (btn) => btn.setButtonText("Sign out").setWarning().onClick(async () => {
           this.plugin.settings.authToken = "";
           this.plugin.settings.userId = "";
@@ -160,9 +163,6 @@ var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
           this.plugin.signOut();
           this.display();
         })
-      );
-      new import_obsidian2.Setting(containerEl).setName("User ID").setDesc("Your account ID on the server (read-only).").addText(
-        (text) => text.setValue(this.plugin.settings.userId).setDisabled(true)
       );
     } else {
       new import_obsidian2.Setting(containerEl).setName("Account").setDesc("Create a new account or sign in to an existing one.").addButton(
@@ -260,20 +260,6 @@ var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Vault ID").setDesc(
-      "Namespace for this vault's files on the server. Set a unique value per vault when syncing multiple vaults to the same account. Leave blank to use no prefix (legacy single-vault behaviour)."
-    ).addText(
-      (text) => text.setPlaceholder("(no prefix)").setValue(this.plugin.settings.vaultId).onChange(async (value) => {
-        this.plugin.settings.vaultId = value.trim();
-        await this.plugin.saveSettings();
-        this.plugin.api.setVaultId(value.trim());
-        this.plugin.restartSync();
-      })
-    );
-    new import_obsidian2.Setting(containerEl).setName("Info").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Device ID").setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).").addText(
-      (text) => text.setValue(this.plugin.settings.clientId).setDisabled(true)
-    );
   }
   // ── Connection status ──────────────────────────────────────────────────────
   /** Called by the plugin whenever the SSE connection state changes. */
@@ -284,16 +270,14 @@ var SyncAgainSettingTab = class extends import_obsidian2.PluginSettingTab {
   renderConnectionStatus(status) {
     if (!this.connectionStatusEl)
       return;
-    const labels = {
-      connected: "Connected",
-      connecting: "Connecting\u2026",
-      disconnected: "Disconnected"
+    const config = {
+      connected: { label: "Connected", color: "syncagain-badge-green" },
+      connecting: { label: "Connecting\u2026", color: "syncagain-badge-yellow" },
+      disconnected: { label: "Disconnected", color: "syncagain-badge-gray" }
     };
-    this.connectionStatusEl.setText(labels[status]);
-    this.connectionStatusEl.setAttribute(
-      "class",
-      `syncagain-conn-status syncagain-conn-status--${status}`
-    );
+    const { label, color } = config[status];
+    this.connectionStatusEl.setText(label);
+    this.connectionStatusEl.setAttribute("class", `syncagain-badge ${color}`);
   }
 };
 
@@ -1247,13 +1231,17 @@ var SyncAgainPlugin = class extends import_obsidian5.Plugin {
   }
   async onload() {
     await this.loadSettings();
+    let needsSave = false;
     if (!this.settings.clientId) {
       this.settings.clientId = crypto.randomUUID();
-      if (!this.settings.vaultId) {
-        this.settings.vaultId = crypto.randomUUID();
-      }
-      await this.saveSettings();
+      needsSave = true;
     }
+    if (!this.settings.vaultId) {
+      this.settings.vaultId = crypto.randomUUID();
+      needsSave = true;
+    }
+    if (needsSave)
+      await this.saveSettings();
     this.statusBarEl = this.addStatusBarItem();
     this.updateStatusBar("off");
     this.tracker = new FileTracker();

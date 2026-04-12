@@ -25,16 +25,19 @@ export default class SyncAgainPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    // Ensure a stable client ID exists.
+    // Ensure stable IDs exist. clientId and vaultId are checked independently
+    // so that existing installs (which already have a clientId) still get a
+    // vaultId assigned on their first load after upgrading.
+    let needsSave = false;
     if (!this.settings.clientId) {
       this.settings.clientId = crypto.randomUUID();
-      // New installation — generate a stable vault UUID so multi-vault
-      // support works out of the box and survives vault renames.
-      if (!this.settings.vaultId) {
-        this.settings.vaultId = crypto.randomUUID();
-      }
-      await this.saveSettings();
+      needsSave = true;
     }
+    if (!this.settings.vaultId) {
+      this.settings.vaultId = crypto.randomUUID();
+      needsSave = true;
+    }
+    if (needsSave) await this.saveSettings();
 
     this.statusBarEl = this.addStatusBarItem();
     this.updateStatusBar("off");

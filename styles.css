@@ -1,21 +1,24 @@
-.syncagain-conn-status {
-  font-size: var(--font-ui-small);
-  padding: 2px 8px;
-  border-radius: 4px;
+.syncagain-badge {
+  display: inline-block;
+  font-size: var(--font-ui-smaller);
   font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-left: 8px;
+  vertical-align: middle;
 }
 
-.syncagain-conn-status--connected {
+.syncagain-badge-green {
   color: var(--color-green);
-  background-color: rgba(var(--color-green-rgb), 0.12);
+  background-color: color-mix(in srgb, var(--color-green) 12%, transparent);
 }
 
-.syncagain-conn-status--connecting {
+.syncagain-badge-yellow {
   color: var(--color-yellow);
-  background-color: rgba(var(--color-yellow-rgb), 0.12);
+  background-color: color-mix(in srgb, var(--color-yellow) 12%, transparent);
 }
 
-.syncagain-conn-status--disconnected {
+.syncagain-badge-gray {
   color: var(--text-muted);
   background-color: var(--background-modifier-border);
 }
