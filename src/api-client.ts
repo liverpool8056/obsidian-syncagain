@@ -28,6 +28,7 @@ export class ApiError extends Error {
  */
 export class ApiClient {
   private token: string | null;
+  private vaultId = "";
 
   constructor(
     private serverUrl: string,
@@ -46,6 +47,31 @@ export class ApiClient {
   /** Discard the cached token (e.g. on sign-out). */
   invalidateToken(): void {
     this.token = null;
+  }
+
+  /** Set the vault namespace prefix used for all file keys. */
+  setVaultId(id: string): void {
+    this.vaultId = id;
+  }
+
+  /**
+   * Convert a vault-local key to the server-side key by prepending the vault prefix.
+   * When vaultId is empty, the key is returned unchanged (legacy single-vault behaviour).
+   */
+  private remoteKey(key: string): string {
+    return this.vaultId ? `${this.vaultId}/${key}` : key;
+  }
+
+  /**
+   * Given a key from an SSE event (server-side, post user-prefix strip), return the
+   * vault-local key, or null if the key does not belong to this vault.
+   * When vaultId is empty, any key is accepted unchanged.
+   */
+  resolveEventKey(key: string): string | null {
+    if (!this.vaultId) return key;
+    const prefix = `${this.vaultId}/`;
+    if (!key.startsWith(prefix)) return null;
+    return key.slice(prefix.length);
   }
 
   // ── Auth ────────────────────────────────────────────────────────────────
@@ -122,11 +148,39 @@ export class ApiClient {
     return res.json as T;
   }
 
+  // ── Vault registry ───────────────────────────────────────────────────────
+
+  /**
+   * Register or update the folder name for this vault on the server.
+   * Called on every sync start so the server's vault_id → vault_name mapping
+   * stays current even after an OS-level vault folder rename.
+   *
+   * Silently no-ops when vaultId is empty (legacy single-vault mode).
+   */
+  async registerVault(vaultName: string): Promise<void> {
+    if (!this.vaultId) return;
+    try {
+      await this.request(
+        "PUT",
+        `/api/vaults/${encodeURIComponent(this.vaultId)}`,
+        JSON.stringify({ name: vaultName }),
+        { "Content-Type": "application/json" },
+      );
+    } catch (err) {
+      // Non-fatal — a failed registration doesn't block sync.
+      console.warn("[SyncAgain] Failed to register vault name:", err);
+    }
+  }
+
   // ── Files ────────────────────────────────────────────────────────────────
 
   async listFiles(): Promise<RemoteFileEntry[]> {
     const data = await this.request<{ files: RemoteFileEntry[] }>("GET", "/api/files");
-    return data.files;
+    if (!this.vaultId) return data.files;
+    const prefix = `${this.vaultId}/`;
+    return data.files
+      .filter((f) => f.key.startsWith(prefix))
+      .map((f) => ({ ...f, key: f.key.slice(prefix.length) }));
   }
 
   async downloadFile(key: string): Promise<ArrayBuffer> {
@@ -135,7 +189,7 @@ export class ApiClient {
       throw new ApiError(401, "Not signed in.");
     }
     const res = await requestUrl({
-      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(key)}`,
+      url: `${this.serverUrl}/api/files/download?key=${encodeURIComponent(this.remoteKey(key))}`,
       headers: { Authorization: `Bearer ${this.token}` },
       throw: false,
     });
@@ -155,14 +209,16 @@ export class ApiClient {
       throw new ApiError(401, "Not signed in.");
     }
 
+    const serverKey = this.remoteKey(key);
+
     // Manually construct multipart/form-data body since requestUrl doesn't accept FormData.
     const boundary = `----SyncAgainBoundary${Date.now()}`;
     const enc = new TextEncoder();
     const keyPart = enc.encode(
-      `--${boundary}\r\nContent-Disposition: form-data; name="key"\r\n\r\n${key}\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="key"\r\n\r\n${serverKey}\r\n`,
     );
     const fileHeader = enc.encode(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${key}"\r\nContent-Type: ${contentType}\r\n\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${serverKey}"\r\nContent-Type: ${contentType}\r\n\r\n`,
     );
     const footer = enc.encode(`\r\n--${boundary}--\r\n`);
     const fileBytes = new Uint8Array(data);
@@ -197,7 +253,7 @@ export class ApiClient {
 
   /** Delete `key` on the server. The caller must hold the lock. */
   async deleteFile(key: string): Promise<void> {
-    await this.request("DELETE", `/api/files?key=${encodeURIComponent(key)}`);
+    await this.request("DELETE", `/api/files?key=${encodeURIComponent(this.remoteKey(key))}`);
   }
 
   // ── Locks ─────────────────────────────────────────────────────────────────
@@ -210,7 +266,7 @@ export class ApiClient {
     await this.request(
       "POST",
       "/api/locks",
-      JSON.stringify({ client_id: this.clientId, files: keys }),
+      JSON.stringify({ client_id: this.clientId, files: keys.map((k) => this.remoteKey(k)) }),
       { "Content-Type": "application/json" },
     );
   }
@@ -219,7 +275,7 @@ export class ApiClient {
     await this.request(
       "DELETE",
       "/api/locks",
-      JSON.stringify({ client_id: this.clientId, files: keys }),
+      JSON.stringify({ client_id: this.clientId, files: keys.map((k) => this.remoteKey(k)) }),
       { "Content-Type": "application/json" },
     );
   }

@@ -11,6 +11,13 @@ export interface SyncAgainSettings {
   syncIntervalMinutes: number;
   /** Whether periodic sync is active */
   syncEnabled: boolean;
+  /**
+   * Namespace for this vault's files on the server.
+   * All keys are stored as `{vaultId}/{vault-relative-path}`.
+   * Empty string = no prefix (legacy single-vault behaviour).
+   * Set a unique value per vault when syncing multiple vaults to the same account.
+   */
+  vaultId: string;
 
   // ── Account (replaces the old shared password) ──────────────────────────
   /** User account ID received after registration/login */
@@ -26,6 +33,7 @@ export const DEFAULT_SETTINGS: SyncAgainSettings = {
   clientId: "",
   syncIntervalMinutes: 5,
   syncEnabled: true,
+  vaultId: "",
   userId: "",
   userEmail: "",
   authToken: "",
@@ -238,6 +246,25 @@ export class SyncAgainSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
               this.plugin.restartSync();
             }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Vault ID")
+      .setDesc(
+        "Namespace for this vault's files on the server. " +
+        "Set a unique value per vault when syncing multiple vaults to the same account. " +
+        "Leave blank to use no prefix (legacy single-vault behaviour).",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("(no prefix)")
+          .setValue(this.plugin.settings.vaultId)
+          .onChange(async (value) => {
+            this.plugin.settings.vaultId = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin.api.setVaultId(value.trim());
+            this.plugin.restartSync();
           }),
       );
 

@@ -6,6 +6,7 @@ An Obsidian plugin for bidirectional vault synchronization via a sync server. Mu
 
 - **Bidirectional sync** — upload local changes, download remote changes, propagate deletions
 - **Multiple simultaneous clients** — SSE-based push notifications trigger immediate sync when another client modifies a file
+- **Multiple vaults per account** — each vault gets a stable UUID; a single account can sync independent vaults without any key collisions
 - **Conflict serialization** — file locks prevent two clients uploading the same file at the same time
 - **Content-based diffing** — MD5 comparison avoids redundant transfers
 - **Per-user accounts** — individual email/password accounts with JWT authentication
@@ -60,8 +61,9 @@ Open Settings → SyncAgain:
 | --- | --- |
 | **Server URL** | Base URL of your sync server, e.g. `http://192.168.1.10:8080` |
 | **Account** | Sign up (opens browser) or sign in inline with email + password |
-| **Sync interval** | How often (in minutes) to run a full sync cycle (default: 5) |
 | **Enable sync** | Toggle to pause sync without changing other settings |
+| **Sync interval** | How often (in minutes) to run a full sync cycle (default: 5) |
+| **Vault ID** | Namespace for this vault's files on the server (see [Multi-vault support](#multi-vault-support)) |
 | **Deletion strategy** | Controlled by Obsidian's own trash setting (system trash or `.trash` folder) |
 
 The plugin auto-generates a unique **Client ID** (UUID) per device, shown in settings for debugging.
@@ -131,7 +133,21 @@ This behaviour is intentional: the server is the authoritative source, and recov
 
 ### Real-time push
 
-The SSE connection receives events from the server. On `file_changed` or `file_deleted` events from *other* clients, the plugin triggers an immediate sync cycle rather than waiting for the interval.
+The SSE connection receives events from the server. On `file_changed` or `file_deleted` events from *other* clients, the plugin triggers an immediate sync cycle rather than waiting for the interval. Events for files belonging to a different vault on the same account are silently ignored.
+
+## Multi-vault support
+
+A single account can sync multiple independent vaults. The plugin assigns each vault a stable **Vault ID** (UUID) on first install and uses it to namespace all file keys on the server as `{vault_id}/{vault-relative-path}`. Files from different vaults never collide, and each vault's sync state is fully isolated.
+
+The UUID is stored inside the vault's own settings file (`.obsidian/plugins/obsidian-syncagain/data.json`), so it survives OS-level vault folder renames without any manual reconfiguration.
+
+To set up a second vault on the same account:
+
+1. Install and enable the plugin in the second vault.
+2. Sign in with the same account credentials.
+3. Each vault will have its own auto-generated Vault ID — no additional configuration needed.
+
+The **Vault ID** field in settings is editable if you need to migrate files or match an existing namespace. Leave it blank only for legacy single-vault setups that pre-date this feature.
 
 ## Development
 
