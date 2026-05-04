@@ -8,6 +8,9 @@
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
+  "dependencies": {
+    "hash-wasm": "^4.11.0"
+  },
   "devDependencies": {
     "@types/node": "^16.11.6",
     "builtin-modules": "^3.3.0",

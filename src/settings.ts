@@ -1,42 +1,65 @@
-import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting, ToggleComponent } from "obsidian";
 import type SyncAgainPlugin from "./main";
-import type { DeletionStrategy } from "./sync-manager";
-import type { RemoteFileEntry } from "./metadata";
+import type { ConnectionStatus } from "./control-channel";
+import type { VaultSettings } from "./api-client";
 
+/**
+ * Plugin settings persisted to data.json.
+ *
+ * One active account per install. Sign-out clears the account fields; sign-in
+ * overwrites them. There is no cached pool of identities.
+ */
 export interface SyncAgainSettings {
-  /** Base URL of the obsidian-sync-server, e.g. "http://localhost:8080" */
-  serverUrl: string;
-  /** Stable client identifier (UUID generated once on first load) */
+  // ── Device-level ────────────────────────────────────────────────────────
+  /** Stable client identifier (UUID generated once on first load). */
   clientId: string;
-  /** How often to run a full sync cycle, in minutes */
+  /** Base URL of the obsidian-sync-server, e.g. "http://localhost:8080". */
+  serverUrl: string;
+  /** How often to run a full sync cycle, in minutes. */
   syncIntervalMinutes: number;
-  /** Whether periodic sync is active */
-  syncEnabled: boolean;
 
-  // ── Account (replaces the old shared password) ──────────────────────────
-  /** User account ID received after registration/login */
+  // ── Active account ──────────────────────────────────────────────────────
+  /** User account ID received after registration/login. Empty when signed out. */
   userId: string;
-  /** Email address shown in the settings UI */
+  /** Email address shown in the settings UI. Empty when signed out. */
   userEmail: string;
-  /** JWT stored after a successful sign-in (30-day expiry) */
+  /** JWT stored after a successful sign-in (30-day expiry). Empty when signed out. */
   authToken: string;
   /**
-   * How local file deletions are handled on the server.
-   * - "non-permanent": file is moved to `_delete/` and can be recovered via the Trash view.
-   * - "permanent": file is deleted immediately and a tombstone is written (no recovery).
+   * Namespace for this vault's files on the server.
+   * All keys are stored as `{remoteVaultId}/{vault-relative-path}`.
    */
-  deletionStrategy: DeletionStrategy;
+  remoteVaultId: string;
+  /** Whether periodic sync is active. */
+  syncEnabled: boolean;
+
+  // ── E2EE state ──────────────────────────────────────────────────────────
+  /** Whether E2EE is active. Files are encrypted with AES-256-GCM before upload. */
+  encryptionEnabled: boolean;
+  /** Server-side E2EE status (DISABLED, MIGRATING, ACTIVE, MIGRATING_TO_OFF). */
+  encryptionStatus: "DISABLED" | "MIGRATING" | "ACTIVE" | "MIGRATING_TO_OFF";
+  /** Secret Key (16-char alphanumeric) used as the root secret. */
+  encryptionSecretKey: string;
+  /** Random 32-byte salt used for Argon2id KEK derivation. */
+  encryptionSalt: string;
+  /** Random 256-bit Data Encryption Key (DEK), stored locally for auto-unlock. */
+  encryptionDEK: string;
 }
 
 export const DEFAULT_SETTINGS: SyncAgainSettings = {
-  serverUrl: "",
   clientId: "",
+  serverUrl: "",
   syncIntervalMinutes: 5,
-  syncEnabled: true,
   userId: "",
   userEmail: "",
   authToken: "",
-  deletionStrategy: "non-permanent",
+  remoteVaultId: "",
+  syncEnabled: false,
+  encryptionEnabled: false,
+  encryptionStatus: "DISABLED",
+  encryptionSecretKey: "",
+  encryptionSalt: "",
+  encryptionDEK: "",
 };
 
 export class SyncAgainSettingTab extends PluginSettingTab {
@@ -44,39 +67,75 @@ export class SyncAgainSettingTab extends PluginSettingTab {
   private passwordInput = "";
   private signingIn = false;
   private showSignInForm = false;
+  private connectionStatusEl: HTMLElement | null = null;
+  private syncToggle: ToggleComponent | null = null;
+  /** Pending timer to reconnect after the server URL field stops changing. */
+  private serverUrlDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Debounces PUT /api/vaults/{vault_id}/settings so rapid keystrokes on the
+   * sync-interval input don't spam the API. Toggle changes share the same
+   * timer so they're flushed alongside any pending interval edit.
+   */
+  private syncedSettingsPushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cached remote vault list for the vault picker; null = not yet fetched. */
+  private vaultList: { vault_id: string; name: string }[] | null = null;
+  private loadingVaults = false;
 
   constructor(app: App, private plugin: SyncAgainPlugin) {
     super(app, plugin);
   }
 
   display(): void {
+    console.debug(
+      `[SyncAgain] settings tab display() — encryptionStatus=${this.plugin.settings.encryptionStatus}` +
+      ` serverE2eeStatus=${this.plugin.serverConfig?.vault?.e2ee?.status ?? "<no-config>"}` +
+      ` serverInitiator=${this.plugin.serverConfig?.vault?.e2ee?.initiator_id ?? "<none>"}` +
+      ` localClientId=${this.plugin.settings.clientId}`,
+    );
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "SyncAgain" });
 
     // ── Server ──────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Server" });
-
-    new Setting(containerEl)
-      .setName("Server URL")
+    const serverUrlSetting = new Setting(containerEl)
+      .setName("Server")
       .setDesc('Base URL of the sync server, e.g. "http://localhost:8080"')
       .addText((text) =>
         text
-          .setPlaceholder("http://localhost:8080")
+          .setPlaceholder("")
           .setValue(this.plugin.settings.serverUrl)
           .onChange(async (value) => {
-            this.plugin.settings.serverUrl = value.trim();
+            const newUrl = value.trim();
+            this.plugin.settings.serverUrl = newUrl;
             await this.plugin.saveSettings();
-            this.plugin.restartSync();
+            this.plugin.api.setServerUrl(newUrl);
+
+            // Stop any active connection immediately so we don't keep a socket
+            // open against an outdated URL while the user is still typing.
+            this.plugin.stopSync();
+
+            // Reconnect only once the user stops editing (debounce 1 s).
+            if (this.serverUrlDebounceTimer !== null) {
+              clearTimeout(this.serverUrlDebounceTimer);
+            }
+            this.serverUrlDebounceTimer = setTimeout(() => {
+              this.serverUrlDebounceTimer = null;
+              this.plugin.restartSync();
+            }, 1_000);
           }),
       );
+    this.connectionStatusEl = serverUrlSetting.nameEl.createEl("span", {
+      cls: "syncagain-badge",
+    });
+    this.renderConnectionStatus(this.plugin.connectionStatus);
 
     // ── Account ─────────────────────────────────────────────────────────────
 
-    containerEl.createEl("h3", { text: "Account" });
+    new Setting(containerEl).setName("Account").setHeading();
 
-    const isSignedIn = Boolean(this.plugin.settings.authToken && this.plugin.settings.userId);
+    const isSignedIn = Boolean(
+      this.plugin.settings.authToken && this.plugin.settings.userId,
+    );
 
     if (isSignedIn) {
       // ── Signed-in state ────────────────────────────────────────────────────
@@ -84,24 +143,21 @@ export class SyncAgainSettingTab extends PluginSettingTab {
         .setName("Signed in")
         .setDesc(this.plugin.settings.userEmail || this.plugin.settings.userId)
         .addButton((btn) =>
+          btn.setButtonText("Account detail").onClick(() => {
+            const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
+            window.open(`${base}/account`);
+          }),
+        )
+        .addButton((btn) =>
           btn
             .setButtonText("Sign out")
             .setWarning()
             .onClick(async () => {
-              this.plugin.settings.authToken = "";
-              this.plugin.settings.userId = "";
-              this.plugin.settings.userEmail = "";
-              await this.plugin.saveSettings();
-              this.plugin.signOut();
+              this.vaultList = null;
+              this.loadingVaults = false;
+              await this.plugin.signOut();
               this.display();
             }),
-        );
-
-      new Setting(containerEl)
-        .setName("User ID")
-        .setDesc("Your account ID on the server (read-only).")
-        .addText((text) =>
-          text.setValue(this.plugin.settings.userId).setDisabled(true),
         );
     } else {
       // ── Signed-out state ───────────────────────────────────────────────────
@@ -114,7 +170,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           btn.setButtonText("Sign up").onClick(() => {
             const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
             if (!base) {
-              new Notice("[SyncAgain] Set the Server URL first.");
+              new Notice("Set the server URL first.");
               return;
             }
             const url = `${base}/register?client_id=${this.plugin.settings.clientId}`;
@@ -134,7 +190,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           .setName("Email")
           .addText((text) => {
             text
-              .setPlaceholder("you@example.com")
+              .setPlaceholder("")
               .setValue(this.emailInput)
               .onChange((v) => { this.emailInput = v.trim(); });
           });
@@ -157,15 +213,15 @@ export class SyncAgainSettingTab extends PluginSettingTab {
               .setDisabled(this.signingIn)
               .onClick(async () => {
                 if (!this.plugin.settings.serverUrl) {
-                  new Notice("[SyncAgain] Set the Server URL first.");
+                  new Notice("Set the server URL first.");
                   return;
                 }
                 if (!this.emailInput) {
-                  new Notice("[SyncAgain] Please enter your email.");
+                  new Notice("Please enter your email.");
                   return;
                 }
                 if (!this.passwordInput) {
-                  new Notice("[SyncAgain] Please enter your password.");
+                  new Notice("Please enter your password.");
                   return;
                 }
 
@@ -177,23 +233,20 @@ export class SyncAgainSettingTab extends PluginSettingTab {
                     this.emailInput,
                     this.passwordInput,
                   );
-                  this.plugin.settings.authToken = result.token;
-                  this.plugin.settings.userId = result.userId;
-                  this.plugin.settings.userEmail = result.userEmail;
-                  await this.plugin.saveSettings();
+                  await this.plugin.signIn({
+                    userId: result.userId,
+                    userEmail: result.userEmail,
+                    authToken: result.token,
+                  });
 
-                  new Notice(`[SyncAgain] Signed in as ${result.userEmail}`);
+                  new Notice(`Signed in as ${result.userEmail}`);
                   this.passwordInput = "";
                   this.signingIn = false;
                   this.showSignInForm = false;
-
-                  if (this.plugin.settings.syncEnabled) {
-                    this.plugin.restartSync();
-                  }
                   this.display();
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  new Notice(`[SyncAgain] Sign in failed: ${msg}`);
+                  new Notice(`Sign-in failed: ${msg}`);
                   this.signingIn = false;
                   btn.setButtonText("Confirm").setDisabled(false);
                 }
@@ -204,24 +257,30 @@ export class SyncAgainSettingTab extends PluginSettingTab {
 
     // ── Sync + Deletion ─────────────────────────────────────────────────────
 
-    if (!isSignedIn) return;
-
-    containerEl.createEl("h3", { text: "Sync" });
+    new Setting(containerEl).setName("Sync").setHeading();
 
     new Setting(containerEl)
       .setName("Enable sync")
-      .setDesc("Turn periodic file sync on or off.")
-      .addToggle((toggle) =>
+      .setDesc("Turn periodic file sync on or off on this device.")
+      .addToggle((toggle) => {
+        this.syncToggle = toggle;
         toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
           this.plugin.settings.syncEnabled = value;
           await this.plugin.saveSettings();
-          value ? this.plugin.startSync() : this.plugin.stopSync();
-        }),
-      );
+          if (value) {
+            this.plugin.startSync();
+          } else {
+            // Run a final sync cycle to flush locally-present but server-absent
+            // files before stopping, then stop once it completes.
+            void this.plugin.syncManager.sync().finally(() => this.plugin.stopSync());
+          }
+          this.display();
+        });
+      });
 
     new Setting(containerEl)
       .setName("Sync interval (minutes)")
-      .setDesc("How often to run a full sync cycle.")
+      .setDesc("How often to run a full sync cycle. Synced across all your devices.")
       .addText((text) =>
         text
           .setPlaceholder("5")
@@ -231,162 +290,375 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             if (!isNaN(parsed) && parsed > 0) {
               this.plugin.settings.syncIntervalMinutes = parsed;
               await this.plugin.saveSettings();
+              this.queueSyncedSettingsPush({ sync_interval_minutes: parsed });
               this.plugin.restartSync();
             }
           }),
       );
 
-    // ── Deletion ────────────────────────────────────────────────────────────
+    // ── Vault linking (only when signed in and sync is enabled) ────────────
 
-    containerEl.createEl("h3", { text: "Deletion" });
+    if (isSignedIn && this.plugin.settings.syncEnabled) {
+      new Setting(containerEl).setName("Vault").setHeading();
 
-    new Setting(containerEl)
-      .setName("Deletion strategy")
-      .setDesc(
-        "Non-permanent: deleted files are moved to a remote trash and can be recovered. " +
-        "Permanent: files are immediately deleted with no recovery option.",
-      )
-      .addDropdown((drop) =>
-        drop
-          .addOption("non-permanent", "Non-permanent (recoverable)")
-          .addOption("permanent", "Permanent (no recovery)")
-          .setValue(this.plugin.settings.deletionStrategy)
-          .onChange(async (value) => {
-            this.plugin.settings.deletionStrategy = value as DeletionStrategy;
-            await this.plugin.saveSettings();
-            this.plugin.syncManager.deletionStrategy = value as DeletionStrategy;
-            this.display(); // re-render to show/hide trash view
-          }),
-      );
+      if (this.plugin.settings.remoteVaultId) {
+        // Already linked — show status only.
+        new Setting(containerEl)
+          .setName("Remote vault")
+          .setDesc(`Linked — vault ID: ${this.plugin.settings.remoteVaultId}`);
+      } else {
+        // Not yet linked — fetch vault list to determine state.
+        if (this.loadingVaults) {
+          containerEl.createEl("p", { text: "Loading remote vaults…", cls: "setting-item-description" });
+        } else if (this.vaultList === null) {
+          // Kick off the fetch; re-render when done.
+          this.loadingVaults = true;
+          this.plugin.api.listVaults()
+            .then((vaults) => {
+              this.vaultList = vaults;
+              this.loadingVaults = false;
+              this.display();
+            })
+            .catch(() => {
+              this.vaultList = [];
+              this.loadingVaults = false;
+              this.display();
+            });
+          containerEl.createEl("p", { text: "Loading remote vaults…", cls: "setting-item-description" });
+        } else if (this.vaultList.length === 0) {
+          // First device — vault is created automatically on sync start.
+          new Setting(containerEl)
+            .setName("Remote vault")
+            .setDesc("A new remote vault will be created automatically.");
+        } else {
+          // Existing remote vaults — show picker + option to create new.
+          new Setting(containerEl)
+            .setName("Remote vault")
+            .setDesc("Connect this device to an existing vault.");
 
-    // ── Trash ────────────────────────────────────────────────────────────────
+          for (const v of this.vaultList) {
+            new Setting(containerEl)
+              .setName(v.name)
+              .setDesc(`ID: ${v.vault_id}`)
+              .addButton((btn) =>
+                btn.setButtonText("Connect").onClick(async () => {
+                  btn.setButtonText("Connecting…").setDisabled(true);
+                  try {
+                    await this.plugin.api.joinVault(v.vault_id);
+                    this.plugin.settings.remoteVaultId = v.vault_id;
+                    this.plugin.api.setRemoteVaultId(v.vault_id);
+                    await this.plugin.saveSettings();
+                    this.vaultList = null;
+                    this.plugin.restartSync();
+                    this.display();
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    new Notice(`Failed to connect: ${msg}`);
+                    btn.setButtonText("Connect").setDisabled(false);
+                  }
+                }),
+              );
+          }
 
-    if (this.plugin.settings.deletionStrategy === "non-permanent") {
-      containerEl.createEl("h3", { text: "Trash" });
-
-      const trashContainer = containerEl.createDiv({ cls: "syncagain-trash" });
-      trashContainer.createEl("p", { text: "Loading…" });
-      this.loadTrashView(trashContainer);
-    }
-
-    // ── Info ────────────────────────────────────────────────────────────────
-
-    containerEl.createEl("h3", { text: "Info" });
-
-    new Setting(containerEl)
-      .setName("Device ID")
-      .setDesc("Unique identifier for this Obsidian instance (auto-generated, read-only).")
-      .addText((text) =>
-        text.setValue(this.plugin.settings.clientId).setDisabled(true),
-      );
-  }
-
-  // ── Trash view ─────────────────────────────────────────────────────────────
-
-  private async loadTrashView(container: HTMLElement): Promise<void> {
-    container.empty();
-    container.createEl("p", { text: "Loading…" });
-
-    let files: RemoteFileEntry[];
-    try {
-      files = await this.plugin.api.listTrash();
-    } catch (err) {
-      container.empty();
-      container.createEl("p", { text: "Failed to load trash. Is the server reachable?" });
-      return;
-    }
-
-    container.empty();
-
-    if (files.length === 0) {
-      container.createEl("p", { text: "Trash is empty." });
-      return;
-    }
-
-    for (const entry of files) {
-      const filename = entry.key.split("/").pop() ?? entry.key;
-      const originalPath = entry.key;
-
-      new Setting(container)
-        .setName(filename)
-        .setDesc(originalPath !== filename ? originalPath : "")
-        .addButton((btn) =>
-          btn
-            .setButtonText("Recover")
-            .setCta()
-            .onClick(async () => {
-              btn.setButtonText("Recovering…").setDisabled(true);
-              try {
-                await this.plugin.api.acquireLocks([originalPath]);
+          new Setting(containerEl)
+            .setName("Or create a new vault")
+            .setDesc("Start fresh with a new remote vault for this device.")
+            .addButton((btn) =>
+              btn.setButtonText("Create vault").onClick(async () => {
+                btn.setButtonText("Creating…").setDisabled(true);
                 try {
-                  await this.plugin.api.recoverFromTrash(originalPath);
-                  // Server has moved _delete/<key> back to <key>; download it locally.
-                  await this.plugin.syncManager.recoverKey(originalPath);
-                  new Notice(`[SyncAgain] Recovered: ${filename}`);
-                } finally {
-                  try { await this.plugin.api.releaseLocks([originalPath]); } catch { /* best-effort */ }
-                }
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                new Notice(`[SyncAgain] Recovery failed: ${msg}`);
-              }
-              this.loadTrashView(container);
-            }),
-        )
-        .addButton((btn) =>
-          btn
-            .setButtonText("Delete")
-            .setWarning()
-            .onClick(() => {
-              new ConfirmDeleteModal(this.app, filename, async () => {
-                try {
-                  await this.plugin.api.deleteFromTrash(originalPath);
-                  new Notice(`[SyncAgain] Permanently deleted: ${filename}`);
+                  const result = await this.plugin.api.createVault(this.plugin.app.vault.getName());
+                  this.plugin.settings.remoteVaultId = result.vault_id;
+                  this.plugin.api.setRemoteVaultId(result.vault_id);
+                  await this.plugin.saveSettings();
+                  this.vaultList = null;
+                  this.plugin.restartSync();
+                  this.display();
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  new Notice(`[SyncAgain] Delete failed: ${msg}`);
+                  new Notice(`Failed to create vault: ${msg}`);
+                  btn.setButtonText("Create vault").setDisabled(false);
                 }
-                this.loadTrashView(container);
-              }).open();
-            }),
-        );
+              }),
+            );
+        }
+      }
     }
+
+    // ── End-to-end encryption (only shown when signed in) ──────────────────
+
+    if (isSignedIn) {
+      new Setting(containerEl).setName("End-to-end encryption").setHeading();
+
+      new Setting(containerEl)
+        .setName("Encryption status")
+        .setDesc(
+          "E2EE status is synchronized with the server. " +
+          "Files are encrypted with AES-256-GCM before uploading when ACTIVE.",
+        )
+        .addText((text) => {
+          text
+            .setValue(this.plugin.settings.encryptionStatus)
+            .setDisabled(true);
+          text.inputEl.addClass("syncagain-encryption-status-input");
+        });
+
+      if (this.plugin.settings.encryptionStatus === "DISABLED") {
+        const e2eeEntitled = this.plugin.accountFeatures.includes("e2ee");
+        if (e2eeEntitled) {
+          new Setting(containerEl)
+            .setName("Enable encryption")
+            .setDesc(
+              "Generates a secret key and starts re-uploading every file in encrypted form. " +
+              "You will need the secret key to unlock the vault on other devices — losing it means " +
+              "losing access to your data. Save it in a password manager before continuing.",
+            )
+            .addButton((btn) =>
+              btn.setButtonText("Start migration").setCta().onClick(async () => {
+                await this.plugin.startE2EEMigration();
+                // After a successful start we have a fresh Secret Key in settings.
+                // Show it in a modal so the user can copy and save it.
+                if (this.plugin.settings.encryptionSecretKey) {
+                  new SecretKeyModal(this.app, this.plugin.settings.encryptionSecretKey).open();
+                }
+                this.display();
+              }),
+            );
+        } else {
+          new Setting(containerEl)
+            .setName("Enable encryption")
+            .setDesc(
+              "End-to-end encryption is not available on your current plan. " +
+              "Contact the server admin to enable the e2ee feature on your account.",
+            );
+        }
+      }
+
+      // Initiator detection: only the device whose clientId matches the
+      // server-pinned `initiator_id` is allowed to drive the state machine
+      // (finalize migration, finalize rollback, start rollback). Other devices
+      // are observers — they should see the current state but not the controls.
+      const serverE2ee = this.plugin.serverConfig?.vault?.e2ee ?? null;
+      const isInitiator =
+        !!serverE2ee?.initiator_id &&
+        serverE2ee.initiator_id === this.plugin.settings.clientId;
+
+      if (this.plugin.settings.encryptionStatus === "MIGRATING") {
+        if (isInitiator) {
+          new Setting(containerEl)
+            .setName("Migration in progress")
+            .setDesc(
+              "Files are being re-uploaded encrypted. Wait until the sync queue is empty " +
+              "(no pending uploads), then click 'Finalize migration' to switch the vault " +
+              "into the ACTIVE state. Other devices stay locked until you finalize.",
+            )
+            .addButton((btn) =>
+              btn.setButtonText("Show secret key").onClick(() => {
+                if (this.plugin.settings.encryptionSecretKey) {
+                  new SecretKeyModal(this.app, this.plugin.settings.encryptionSecretKey).open();
+                } else {
+                  new Notice("No secret key stored locally on this device.");
+                }
+              }),
+            )
+            .addButton((btn) =>
+              btn.setButtonText("Finalize migration").setCta().onClick(async () => {
+                await this.plugin.finalizeE2EEMigration();
+                this.display();
+              }),
+            );
+        } else {
+          new Setting(containerEl)
+            .setName("Migration in progress (another device)")
+            .setDesc(
+              "Another device is migrating this vault to E2EE. Uploads from this device " +
+              "are blocked until the initiator finalizes. If you have the secret key, " +
+              "you can unlock the vault on this device to read the encrypted files.",
+            );
+        }
+      }
+
+      if (this.plugin.settings.encryptionStatus === "ACTIVE") {
+        new Setting(containerEl)
+          .setName("Disable encryption")
+          .setDesc(
+            "Start a rollback to plaintext. Once started, every device will need to wait " +
+            "for the initiator to finalize before sync resumes.",
+          )
+          .addButton((btn) =>
+            btn.setButtonText("Start rollback").setWarning().onClick(async () => {
+              await this.plugin.startE2EERollback();
+              this.display();
+            }),
+          );
+      }
+
+      if (this.plugin.settings.encryptionStatus === "MIGRATING_TO_OFF") {
+        if (isInitiator) {
+          new Setting(containerEl)
+            .setName("Rollback in progress")
+            .setDesc("Files are being re-uploaded in plaintext. Once finished, click finalize.")
+            .addButton((btn) =>
+              btn.setButtonText("Finalize rollback").setWarning().onClick(async () => {
+                await this.plugin.finalizeE2EERollback();
+                this.display();
+              }),
+            );
+        } else {
+          new Setting(containerEl)
+            .setName("Rollback in progress (another device)")
+            .setDesc(
+              "Another device is rolling this vault back to plaintext. Uploads from this " +
+              "device are blocked until the initiator finalizes.",
+            );
+        }
+      }
+
+      if (this.plugin.settings.encryptionStatus !== "DISABLED") {
+        let secretKeyInput: HTMLInputElement | null = null;
+        const secretKeySetting = new Setting(containerEl)
+          .setName("Secret key")
+          .setDesc(
+            "The 16-character key used to derive the encryption key. Required to unlock " +
+            "this vault on a new device. Edit it here only if you are entering a key from " +
+            "another device.",
+          )
+          .addText((text) => {
+            text.inputEl.type = "password";
+            text
+              .setPlaceholder("xxxx-xxxx-xxxx-xxxx")
+              .setValue(this.plugin.settings.encryptionSecretKey)
+              .onChange(async (value) => {
+                this.plugin.settings.encryptionSecretKey = value;
+                await this.plugin.saveSettings();
+              });
+            secretKeyInput = text.inputEl;
+          });
+
+        // Show/hide toggle — built after the Setting is fully constructed so the
+        // controlEl exists and we avoid the TDZ on `secretKeySetting`.
+        const showBtn = secretKeySetting.controlEl.createEl("button", {
+          text: "Show",
+          cls: "syncagain-show-secret-btn",
+        });
+        showBtn.onClickEvent(() => {
+          if (!secretKeyInput) return;
+          if (secretKeyInput.type === "password") {
+            secretKeyInput.type = "text";
+            showBtn.setText("Hide");
+          } else {
+            secretKeyInput.type = "password";
+            showBtn.setText("Show");
+          }
+        });
+
+        // Copy-to-clipboard
+        const copyBtn = secretKeySetting.controlEl.createEl("button", {
+          text: "Copy",
+          cls: "syncagain-show-secret-btn",
+        });
+        copyBtn.onClickEvent(async () => {
+          const value = this.plugin.settings.encryptionSecretKey;
+          if (!value) {
+            new Notice("No secret key stored locally.");
+            return;
+          }
+          await navigator.clipboard.writeText(value);
+          new Notice("Secret key copied to clipboard.");
+        });
+      }
+    }
+
   }
+
+  // ── Connection status ──────────────────────────────────────────────────────
+
+  /** Called by the plugin whenever the WebSocket connection state changes. */
+  updateConnectionStatus(status: ConnectionStatus): void {
+    this.plugin.connectionStatus = status;
+    this.renderConnectionStatus(status);
+  }
+
+  private renderConnectionStatus(status: ConnectionStatus): void {
+    if (!this.connectionStatusEl) return;
+    const config: Record<ConnectionStatus, { label: string; color: string }> = {
+      connected:    { label: "Connected",    color: "syncagain-badge-green"  },
+      connecting:   { label: "Connecting…",  color: "syncagain-badge-yellow" },
+      disconnected: { label: "Disconnected", color: "syncagain-badge-gray"   },
+    };
+    const { label, color } = config[status];
+    this.connectionStatusEl.setText(label);
+    this.connectionStatusEl.setAttribute("class", `syncagain-badge ${color}`);
+  }
+
+  /**
+   * Buffer of pending field changes flushed to the server after 1 s of
+   * inactivity. Successive calls before the timer fires merge into the same
+   * payload so a toggle change and a number-input edit go out as one PUT.
+   */
+  private pendingSyncedSettings: Partial<VaultSettings> = {};
+
+  private queueSyncedSettingsPush(patch: Partial<VaultSettings>): void {
+    if (!this.plugin.settings.remoteVaultId) return;
+    Object.assign(this.pendingSyncedSettings, patch);
+
+    if (this.syncedSettingsPushTimer !== null) {
+      clearTimeout(this.syncedSettingsPushTimer);
+    }
+    this.syncedSettingsPushTimer = setTimeout(() => {
+      this.syncedSettingsPushTimer = null;
+      const payload = this.pendingSyncedSettings;
+      this.pendingSyncedSettings = {};
+      void this.plugin.api
+        .updateVaultSettings(this.plugin.settings.remoteVaultId, payload)
+        .catch((err) => {
+          console.warn("[SyncAgain] Failed to push vault settings:", err);
+        });
+    }, 1_000);
+  }
+
 }
 
-// ── Confirm-delete modal ──────────────────────────────────────────────────────
+/**
+ * Modal shown right after a fresh Secret Key is generated, so the user gets a
+ * single clear chance to copy it down before it disappears behind a password
+ * field. The DEK is also stored locally for auto-unlock, but the Secret Key is
+ * the *only* recovery path on a new device — so emphasising it here matters.
+ */
+class SecretKeyModal extends Modal {
+  private readonly secretKey: string;
 
-class ConfirmDeleteModal extends Modal {
-  constructor(
-    app: App,
-    private readonly filename: string,
-    private readonly onConfirm: () => Promise<void>,
-  ) {
+  constructor(app: App, secretKey: string) {
     super(app);
+    this.secretKey = secretKey;
   }
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Permanently delete?" });
-    contentEl.createEl("p", {
-      text: `"${this.filename}" will be permanently deleted and cannot be recovered.`,
+    contentEl.empty();
+
+    this.setTitle("Save your secret key");
+
+    const warning = contentEl.createEl("p");
+    warning.setText(
+      "This key is the only way to unlock your vault on another device. " +
+      "If you lose it, your encrypted files cannot be recovered — not even by us. " +
+      "Store it in a password manager now.",
+    );
+
+    const keyEl = contentEl.createEl("pre", { cls: "syncagain-secret-key-display" });
+    keyEl.setText(this.secretKey);
+
+    const buttonRow = contentEl.createDiv({ cls: "syncagain-secret-key-buttons" });
+
+    const copyBtn = buttonRow.createEl("button", { text: "Copy to clipboard", cls: "mod-cta" });
+    copyBtn.onClickEvent(async () => {
+      await navigator.clipboard.writeText(this.secretKey);
+      new Notice("Secret key copied to clipboard.");
     });
 
-    new Setting(contentEl)
-      .addButton((btn) =>
-        btn
-          .setButtonText("Cancel")
-          .onClick(() => this.close()),
-      )
-      .addButton((btn) =>
-        btn
-          .setButtonText("Delete permanently")
-          .setWarning()
-          .onClick(async () => {
-            this.close();
-            await this.onConfirm();
-          }),
-      );
+    const closeBtn = buttonRow.createEl("button", { text: "I have saved it" });
+    closeBtn.onClickEvent(() => this.close());
   }
 
   onClose(): void {

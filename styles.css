@@ -1,0 +1,52 @@
+.syncagain-badge {
+  display: inline-block;
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.syncagain-badge-green {
+  color: var(--color-green);
+  background-color: color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.syncagain-badge-yellow {
+  color: var(--color-yellow);
+  background-color: color-mix(in srgb, var(--color-yellow) 12%, transparent);
+}
+
+.syncagain-badge-gray {
+  color: var(--text-muted);
+  background-color: var(--background-modifier-border);
+}
+
+.syncagain-encryption-status-input {
+  width: 80px;
+}
+
+.syncagain-show-secret-btn {
+  margin-left: 6px;
+}
+
+.syncagain-secret-key-display {
+  font-size: 1.25em;
+  padding: 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  text-align: center;
+  letter-spacing: 1px;
+  user-select: all;
+  margin: 12px 0;
+}
+
+.syncagain-secret-key-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
