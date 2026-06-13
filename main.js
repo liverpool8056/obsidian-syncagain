@@ -642,6 +642,9 @@ var FileTracker = class {
     if (!(file instanceof import_obsidian4.TFile))
       return;
     this.dirtyFiles.delete(oldPath);
+    if (!oldPath.startsWith(".trash/")) {
+      this.pendingDeletions.add(oldPath);
+    }
     this.markDirty(file);
   }
   handleDelete(file) {

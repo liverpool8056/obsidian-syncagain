@@ -42,7 +42,13 @@ export class FileTracker {
 
   handleRename(file: TAbstractFile, oldPath: string): void {
     if (!(file instanceof TFile)) return;
+    // Server has no rename concept — model a move/rename as delete(oldPath) +
+    // create(newPath). Without tombstoning oldPath, the old server key survives
+    // and reconcileRemote re-downloads it, recreating the file at its old path.
     this.dirtyFiles.delete(oldPath);
+    if (!oldPath.startsWith(".trash/")) {
+      this.pendingDeletions.add(oldPath);
+    }
     this.markDirty(file);
   }
 
