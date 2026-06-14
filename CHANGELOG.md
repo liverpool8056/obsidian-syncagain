@@ -19,6 +19,7 @@ First version released. Bidirectional vault sync plugin with upload, download, a
 ### Summary
 1. Fix an issue where file moved to another location would be pulled again to the original location.
 2. Support "Forgot Password" 
+3. Support a checkbox to **forget** cached account data when logging out
 
 [1.0.0]: https://github.com/liverpool8056/obsidian-syncagain/commits/b904b66...1.0.0
 [1.1.0]: https://github.com/liverpool8056/obsidian-syncagain/commits/1.0.0...1.1.0

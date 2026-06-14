@@ -50,6 +50,12 @@ export class E2EENegotiator implements FeatureNegotiator {
       // Don't return reconfigured yet; we might be blocked.
     }
 
+    // If we hold no key material but signed out of this same vault earlier on
+    // this device, silently restore the cached secret key instead of prompting.
+    // The cached DEK is re-verified against the server token, so a key rotated
+    // elsewhere is ignored and the unlock modal still appears below.
+    await this.tryRestoreFromCache(e2ee, local, plugin);
+
     // ── Case 2: vault is MIGRATING or ACTIVE ─────────────────────────────
 
     // If we are the initiator of a migration, we are allowed to proceed.
@@ -149,5 +155,46 @@ export class E2EENegotiator implements FeatureNegotiator {
     }
 
     return { status: "ok" };
+  }
+
+  /**
+   * Restore E2EE key material for this (account, vault) from the cross-sign-out
+   * cache, if present and still valid. Returns true if it restored a key.
+   *
+   * No-op when the device already holds key material. The cached DEK is verified
+   * against the server's `key_verification_token` before adoption, so a stale
+   * entry (e.g. the secret key was rotated on another device while this one was
+   * signed out) is discarded rather than adopted, letting the caller fall back
+   * to the unlock prompt.
+   */
+  private async tryRestoreFromCache(
+    e2ee: NonNullable<VaultFeatureState["e2ee"]>,
+    local: SyncAgainSettings,
+    plugin: SyncAgainPlugin,
+  ): Promise<boolean> {
+    if (local.encryptionDEK || local.encryptionSecretKey) return false;
+    if (!local.userId || !local.remoteVaultId) return false;
+    if (!e2ee.key_verification_token) return false;
+
+    const entry = local.cachedVaultKeys[`${local.userId}:${local.remoteVaultId}`];
+    if (!entry?.dek) return false;
+
+    try {
+      const enc = await VaultEncryption.importDEK(entry.dek);
+      if (!(await enc.verifyKeyToken(e2ee.key_verification_token))) {
+        // Stale cache (key rotated elsewhere). Drop it; user will be prompted.
+        delete local.cachedVaultKeys[`${local.userId}:${local.remoteVaultId}`];
+        await plugin.saveSettings();
+        return false;
+      }
+      local.encryptionSecretKey = entry.secretKey;
+      local.encryptionSalt = entry.salt;
+      local.encryptionDEK = entry.dek;
+      await plugin.saveSettings();
+      console.debug("[SyncAgain] e2ee-negotiator — restored key from cross-sign-out cache");
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

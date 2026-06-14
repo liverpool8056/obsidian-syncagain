@@ -185,7 +185,8 @@ var DEFAULT_SETTINGS = {
   encryptionStatus: "DISABLED",
   encryptionSecretKey: "",
   encryptionSalt: "",
-  encryptionDEK: ""
+  encryptionDEK: "",
+  cachedVaultKeys: {}
 };
 var SyncAgainSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
@@ -253,12 +254,7 @@ var SyncAgainSettingTab = class extends import_obsidian3.PluginSettingTab {
           window.open(`${base}/account`);
         })
       ).addButton(
-        (btn) => btn.setButtonText("Sign out").setWarning().onClick(async () => {
-          this.vaultList = null;
-          this.loadingVaults = false;
-          await this.plugin.signOut();
-          this.display();
-        })
+        (btn) => btn.setButtonText("Sign out").setWarning().onClick(() => this.confirmSignOut())
       );
     } else {
       new import_obsidian3.Setting(containerEl).setName("Account").setDesc("Create a new account or sign in to an existing one.").addButton(
@@ -583,6 +579,52 @@ var SyncAgainSettingTab = class extends import_obsidian3.PluginSettingTab {
         console.warn("[SyncAgain] Failed to push vault settings:", err);
       });
     }, 1e3);
+  }
+  /**
+   * Sign out, first prompting (when there is cached E2EE key material) whether
+   * to also purge this account's saved secret key from the device. With no key
+   * material to retain, signs out directly without the prompt.
+   */
+  confirmSignOut() {
+    const finish = async (purgeCachedKeys) => {
+      this.vaultList = null;
+      this.loadingVaults = false;
+      await this.plugin.signOut({ purgeCachedKeys });
+      this.display();
+    };
+    const hasKeyMaterial = Boolean(this.plugin.settings.encryptionDEK || this.plugin.settings.encryptionSecretKey) || Object.keys(this.plugin.settings.cachedVaultKeys).some(
+      (k) => k.startsWith(`${this.plugin.settings.userId}:`)
+    );
+    if (!hasKeyMaterial) {
+      void finish(false);
+      return;
+    }
+    new SignOutModal(this.app, (purgeCachedKeys) => void finish(purgeCachedKeys)).open();
+  }
+};
+var SignOutModal = class extends import_obsidian3.Modal {
+  constructor(app, onConfirm) {
+    super(app);
+    this.onConfirm = onConfirm;
+    this.purge = false;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.setTitle("Remove cached data");
+    new import_obsidian3.Setting(contentEl).setName("Confirm if you want to remove cached account data").setDesc(
+      "Delete cached secret key on this device for this account. You can leave off without checking to avoid re-entering it when you sign back in and rejoin the same vault."
+    ).addToggle((t) => t.setValue(this.purge).onChange((v) => this.purge = v));
+    const buttonRow = contentEl.createDiv({ cls: "syncagain-secret-key-buttons" });
+    buttonRow.createEl("button", { text: "Cancel" }).onClickEvent(() => this.close());
+    const signOutBtn = buttonRow.createEl("button", { text: "Sign out", cls: "mod-warning" });
+    signOutBtn.onClickEvent(() => {
+      this.close();
+      this.onConfirm(this.purge);
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
   }
 };
 var SecretKeyModal = class extends import_obsidian3.Modal {
@@ -2861,6 +2903,7 @@ var E2EENegotiator = class {
       await plugin.saveSettings();
       console.debug(`[SyncAgain] encryptionStatus mutated: ${prev} \u2192 ${e2ee.status} (negotiator-sync)`);
     }
+    await this.tryRestoreFromCache(e2ee, local, plugin);
     if ((e2ee.status === "MIGRATING" || e2ee.status === "MIGRATING_TO_OFF") && e2ee.initiator_id === local.clientId) {
       if (!local.encryptionDEK) {
         return {
@@ -2930,6 +2973,43 @@ var E2EENegotiator = class {
       }
     }
     return { status: "ok" };
+  }
+  /**
+   * Restore E2EE key material for this (account, vault) from the cross-sign-out
+   * cache, if present and still valid. Returns true if it restored a key.
+   *
+   * No-op when the device already holds key material. The cached DEK is verified
+   * against the server's `key_verification_token` before adoption, so a stale
+   * entry (e.g. the secret key was rotated on another device while this one was
+   * signed out) is discarded rather than adopted, letting the caller fall back
+   * to the unlock prompt.
+   */
+  async tryRestoreFromCache(e2ee, local, plugin) {
+    if (local.encryptionDEK || local.encryptionSecretKey)
+      return false;
+    if (!local.userId || !local.remoteVaultId)
+      return false;
+    if (!e2ee.key_verification_token)
+      return false;
+    const entry = local.cachedVaultKeys[`${local.userId}:${local.remoteVaultId}`];
+    if (!(entry == null ? void 0 : entry.dek))
+      return false;
+    try {
+      const enc = await VaultEncryption.importDEK(entry.dek);
+      if (!await enc.verifyKeyToken(e2ee.key_verification_token)) {
+        delete local.cachedVaultKeys[`${local.userId}:${local.remoteVaultId}`];
+        await plugin.saveSettings();
+        return false;
+      }
+      local.encryptionSecretKey = entry.secretKey;
+      local.encryptionSalt = entry.salt;
+      local.encryptionDEK = entry.dek;
+      await plugin.saveSettings();
+      console.debug("[SyncAgain] e2ee-negotiator \u2014 restored key from cross-sign-out cache");
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 };
 
@@ -3467,22 +3547,23 @@ var SyncAgainPlugin = class extends import_obsidian8.Plugin {
   }
   // ── Settings ──────────────────────────────────────────────────────────────
   async loadSettings() {
-    var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
+    var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
     const raw = (_a2 = await this.loadData()) != null ? _a2 : {};
     const clientId = (_b = raw["clientId"]) != null ? _b : "";
     const serverUrl = (_c = raw["serverUrl"]) != null ? _c : "";
     const syncIntervalMinutes = (_d = raw["syncIntervalMinutes"]) != null ? _d : 5;
+    const cachedVaultKeys = (_e = raw["cachedVaultKeys"]) != null ? _e : {};
     let account = {};
     if ("accounts" in raw && typeof raw["accounts"] === "object" && raw["accounts"] !== null) {
       const accounts = raw["accounts"];
-      const currentUserId = (_e = raw["currentUserId"]) != null ? _e : "";
-      account = (_f = accounts[currentUserId]) != null ? _f : {};
+      const currentUserId = (_f = raw["currentUserId"]) != null ? _f : "";
+      account = (_g = accounts[currentUserId]) != null ? _g : {};
     } else {
       account = raw;
     }
-    const userId = (_g = account["userId"]) != null ? _g : "";
-    const userEmail = (_h = account["userEmail"]) != null ? _h : "";
-    const authToken = (_i = account["authToken"]) != null ? _i : "";
+    const userId = (_h = account["userId"]) != null ? _h : "";
+    const userEmail = (_i = account["userEmail"]) != null ? _i : "";
+    const authToken = (_j = account["authToken"]) != null ? _j : "";
     const wasAnonymous = !!userId && userId === clientId && !userEmail;
     this.signedOutFromAnonymous = wasAnonymous;
     this.settings = {
@@ -3493,13 +3574,14 @@ var SyncAgainPlugin = class extends import_obsidian8.Plugin {
       userId: wasAnonymous ? "" : userId,
       userEmail: wasAnonymous ? "" : userEmail,
       authToken: wasAnonymous ? "" : authToken,
-      remoteVaultId: wasAnonymous ? "" : (_k = (_j = account["remoteVaultId"]) != null ? _j : account["vaultId"]) != null ? _k : "",
-      syncEnabled: wasAnonymous ? false : (_l = account["syncEnabled"]) != null ? _l : false,
-      encryptionEnabled: wasAnonymous ? false : (_m = account["encryptionEnabled"]) != null ? _m : false,
-      encryptionStatus: wasAnonymous ? "DISABLED" : (_n = account["encryptionStatus"]) != null ? _n : account["encryptionEnabled"] ? "ACTIVE" : "DISABLED",
-      encryptionSecretKey: wasAnonymous ? "" : (_p = (_o = account["encryptionSecretKey"]) != null ? _o : account["encryptionPassphrase"]) != null ? _p : "",
-      encryptionSalt: wasAnonymous ? "" : (_q = account["encryptionSalt"]) != null ? _q : "",
-      encryptionDEK: wasAnonymous ? "" : (_r = account["encryptionDEK"]) != null ? _r : ""
+      remoteVaultId: wasAnonymous ? "" : (_l = (_k = account["remoteVaultId"]) != null ? _k : account["vaultId"]) != null ? _l : "",
+      syncEnabled: wasAnonymous ? false : (_m = account["syncEnabled"]) != null ? _m : false,
+      encryptionEnabled: wasAnonymous ? false : (_n = account["encryptionEnabled"]) != null ? _n : false,
+      encryptionStatus: wasAnonymous ? "DISABLED" : (_o = account["encryptionStatus"]) != null ? _o : account["encryptionEnabled"] ? "ACTIVE" : "DISABLED",
+      encryptionSecretKey: wasAnonymous ? "" : (_q = (_p = account["encryptionSecretKey"]) != null ? _p : account["encryptionPassphrase"]) != null ? _q : "",
+      encryptionSalt: wasAnonymous ? "" : (_r = account["encryptionSalt"]) != null ? _r : "",
+      encryptionDEK: wasAnonymous ? "" : (_s = account["encryptionDEK"]) != null ? _s : "",
+      cachedVaultKeys
     };
     if ("accounts" in raw || "currentUserId" in raw || wasAnonymous) {
       await this.saveData(this.settings);
@@ -3523,11 +3605,36 @@ var SyncAgainPlugin = class extends import_obsidian8.Plugin {
     }
     (_a2 = this.settingTab) == null ? void 0 : _a2.display();
   }
-  /** Clear all account credentials and any vault/E2EE state derived from them. */
-  async signOut() {
+  /**
+   * Clear all account credentials and any vault/E2EE state derived from them.
+   *
+   * By default the E2EE key material is stashed into `cachedVaultKeys` (keyed by
+   * the signing-out account + vault) so the user is not re-prompted for the
+   * secret key after signing back in and rejoining the same vault. The cached
+   * DEK is always re-verified against the server token before reuse, so this is
+   * safe — see {@link E2EENegotiator}. Pass `purgeCachedKeys: true` (the "remove
+   * cached data" option, for a shared/untrusted device) to delete this account's
+   * cache instead of retaining it.
+   */
+  async signOut(opts = {}) {
     this.stopSync();
     this.api.invalidateToken();
     this.api.setRemoteVaultId("");
+    const { userId, remoteVaultId } = this.settings;
+    if (userId) {
+      if (opts.purgeCachedKeys) {
+        for (const k of Object.keys(this.settings.cachedVaultKeys)) {
+          if (k.startsWith(`${userId}:`))
+            delete this.settings.cachedVaultKeys[k];
+        }
+      } else if (remoteVaultId && (this.settings.encryptionDEK || this.settings.encryptionSecretKey)) {
+        this.settings.cachedVaultKeys[`${userId}:${remoteVaultId}`] = {
+          secretKey: this.settings.encryptionSecretKey,
+          salt: this.settings.encryptionSalt,
+          dek: this.settings.encryptionDEK
+        };
+      }
+    }
     this.settings.userId = "";
     this.settings.userEmail = "";
     this.settings.authToken = "";

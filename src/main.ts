@@ -5,6 +5,7 @@ import { showVaultPickerModal } from "./vault-picker-modal";
 
 import {
   SyncAgainSettings,
+  CachedVaultKey,
   DEFAULT_SETTINGS,
   SyncAgainSettingTab,
 } from "./settings";
@@ -670,6 +671,9 @@ export default class SyncAgainPlugin extends Plugin {
     const clientId = (raw["clientId"] as string | undefined) ?? "";
     const serverUrl = (raw["serverUrl"] as string | undefined) ?? "";
     const syncIntervalMinutes = (raw["syncIntervalMinutes"] as number | undefined) ?? 5;
+    // Device-level E2EE key cache: spans accounts, retained across sign-out.
+    const cachedVaultKeys =
+      (raw["cachedVaultKeys"] as Record<string, CachedVaultKey> | undefined) ?? {};
 
     // Resolve the active account record from either schema shape.
     let account: Record<string, unknown> = {};
@@ -714,6 +718,7 @@ export default class SyncAgainPlugin extends Plugin {
             ?? (account["encryptionPassphrase"] as string | undefined) ?? ""),
       encryptionSalt: wasAnonymous ? "" : ((account["encryptionSalt"] as string | undefined) ?? ""),
       encryptionDEK: wasAnonymous ? "" : ((account["encryptionDEK"] as string | undefined) ?? ""),
+      cachedVaultKeys,
     };
 
     // Persist the migrated shape so the legacy fields are gone after the
@@ -745,11 +750,41 @@ export default class SyncAgainPlugin extends Plugin {
     this.settingTab?.display();
   }
 
-  /** Clear all account credentials and any vault/E2EE state derived from them. */
-  async signOut(): Promise<void> {
+  /**
+   * Clear all account credentials and any vault/E2EE state derived from them.
+   *
+   * By default the E2EE key material is stashed into `cachedVaultKeys` (keyed by
+   * the signing-out account + vault) so the user is not re-prompted for the
+   * secret key after signing back in and rejoining the same vault. The cached
+   * DEK is always re-verified against the server token before reuse, so this is
+   * safe — see {@link E2EENegotiator}. Pass `purgeCachedKeys: true` (the "remove
+   * cached data" option, for a shared/untrusted device) to delete this account's
+   * cache instead of retaining it.
+   */
+  async signOut(opts: { purgeCachedKeys?: boolean } = {}): Promise<void> {
     this.stopSync();
     this.api.invalidateToken();
     this.api.setRemoteVaultId("");
+
+    const { userId, remoteVaultId } = this.settings;
+    if (userId) {
+      if (opts.purgeCachedKeys) {
+        // Forget every vault cached for this account on this device.
+        for (const k of Object.keys(this.settings.cachedVaultKeys)) {
+          if (k.startsWith(`${userId}:`)) delete this.settings.cachedVaultKeys[k];
+        }
+      } else if (
+        remoteVaultId &&
+        (this.settings.encryptionDEK || this.settings.encryptionSecretKey)
+      ) {
+        // Retain key material so the next sign-in into this vault auto-unlocks.
+        this.settings.cachedVaultKeys[`${userId}:${remoteVaultId}`] = {
+          secretKey: this.settings.encryptionSecretKey,
+          salt: this.settings.encryptionSalt,
+          dek: this.settings.encryptionDEK,
+        };
+      }
+    }
 
     this.settings.userId = "";
     this.settings.userEmail = "";

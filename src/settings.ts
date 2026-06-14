@@ -3,6 +3,16 @@ import type SyncAgainPlugin from "./main";
 import type { ConnectionStatus } from "./control-channel";
 import type { VaultSettings } from "./api-client";
 
+/** E2EE key material cached for one (account, vault) pair. */
+export interface CachedVaultKey {
+  /** 16-char Secret Key (root secret). */
+  secretKey: string;
+  /** Hex-encoded Argon2id salt. */
+  salt: string;
+  /** Hex-encoded DEK bytes. */
+  dek: string;
+}
+
 /**
  * Plugin settings persisted to data.json.
  *
@@ -44,6 +54,19 @@ export interface SyncAgainSettings {
   encryptionSalt: string;
   /** Random 256-bit Data Encryption Key (DEK), stored locally for auto-unlock. */
   encryptionDEK: string;
+
+  // ── Cross-sign-out E2EE key cache ───────────────────────────────────────
+  /**
+   * Per-(account, vault) E2EE key material retained across sign-out, keyed by
+   * `${userId}:${vaultId}`. Device-level: it spans accounts and is NOT cleared
+   * by an ordinary sign-out, so a user who signs back in and rejoins the same
+   * encrypted vault is not re-prompted for the secret key. The cached DEK is
+   * always re-verified against the server's `key_verification_token` before
+   * reuse, so a key rotated elsewhere safely falls back to the unlock prompt.
+   * Cleared for the signing-out account when the "remove cached data" option is
+   * checked (e.g. on a shared device).
+   */
+  cachedVaultKeys: Record<string, CachedVaultKey>;
 }
 
 export const DEFAULT_SETTINGS: SyncAgainSettings = {
@@ -60,6 +83,7 @@ export const DEFAULT_SETTINGS: SyncAgainSettings = {
   encryptionSecretKey: "",
   encryptionSalt: "",
   encryptionDEK: "",
+  cachedVaultKeys: {},
 };
 
 export class SyncAgainSettingTab extends PluginSettingTab {
@@ -152,12 +176,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
           btn
             .setButtonText("Sign out")
             .setWarning()
-            .onClick(async () => {
-              this.vaultList = null;
-              this.loadingVaults = false;
-              await this.plugin.signOut();
-              this.display();
-            }),
+            .onClick(() => this.confirmSignOut()),
         );
     } else {
       // ── Signed-out state ───────────────────────────────────────────────────
@@ -633,6 +652,75 @@ export class SyncAgainSettingTab extends PluginSettingTab {
     }, 1_000);
   }
 
+  /**
+   * Sign out, first prompting (when there is cached E2EE key material) whether
+   * to also purge this account's saved secret key from the device. With no key
+   * material to retain, signs out directly without the prompt.
+   */
+  private confirmSignOut(): void {
+    const finish = async (purgeCachedKeys: boolean) => {
+      this.vaultList = null;
+      this.loadingVaults = false;
+      await this.plugin.signOut({ purgeCachedKeys });
+      this.display();
+    };
+
+    const hasKeyMaterial =
+      Boolean(this.plugin.settings.encryptionDEK || this.plugin.settings.encryptionSecretKey) ||
+      Object.keys(this.plugin.settings.cachedVaultKeys).some((k) =>
+        k.startsWith(`${this.plugin.settings.userId}:`),
+      );
+
+    if (!hasKeyMaterial) {
+      void finish(false);
+      return;
+    }
+
+    new SignOutModal(this.app, (purgeCachedKeys) => void finish(purgeCachedKeys)).open();
+  }
+}
+
+/**
+ * Sign-out confirmation modal. Offers to also delete this device's cached secret
+ * key for the account. Left unchecked (the default), the key is retained so the
+ * user isn't re-prompted when they sign back in and rejoin the same vault; the
+ * cached DEK is always re-verified against the server token before reuse, so
+ * retaining it is safe.
+ */
+class SignOutModal extends Modal {
+  private purge = false;
+
+  constructor(app: App, private readonly onConfirm: (purgeCachedKeys: boolean) => void) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    this.setTitle("Remove cached data");
+
+    new Setting(contentEl)
+      .setName("Confirm if you want to remove cached account data")
+      .setDesc(
+        "Delete cached secret key on this device for this account. You can leave " +
+          "off without checking to avoid re-entering it when you sign back in and " +
+          "rejoin the same vault.",
+      )
+      .addToggle((t) => t.setValue(this.purge).onChange((v) => (this.purge = v)));
+
+    const buttonRow = contentEl.createDiv({ cls: "syncagain-secret-key-buttons" });
+    buttonRow.createEl("button", { text: "Cancel" }).onClickEvent(() => this.close());
+    const signOutBtn = buttonRow.createEl("button", { text: "Sign out", cls: "mod-warning" });
+    signOutBtn.onClickEvent(() => {
+      this.close();
+      this.onConfirm(this.purge);
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
 }
 
 /**
