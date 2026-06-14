@@ -1,6 +1,6 @@
 {
   "name": "obsidian-syncagain",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Periodically syncs modified vault files to a remote storage backend.",
   "main": "main.js",
   "scripts": {

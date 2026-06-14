@@ -252,6 +252,22 @@ export class SyncAgainSettingTab extends PluginSettingTab {
                 }
               });
           });
+
+        // Forgot-password link — opens the server's browser flow (CAPTCHA +
+        // email OTP + new password). No plugin-side API calls are involved;
+        // the user returns here to sign in once the reset completes.
+        new Setting(containerEl)
+          .setDesc("Forgot your password?")
+          .addButton((btn) =>
+            btn.setButtonText("Reset password").onClick(() => {
+              const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
+              if (!base) {
+                new Notice("Set the server URL first.");
+                return;
+              }
+              window.open(`${base}/forgot-password`);
+            }),
+          );
       }
     }
 

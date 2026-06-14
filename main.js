@@ -328,6 +328,16 @@ var SyncAgainSettingTab = class extends import_obsidian3.PluginSettingTab {
             }
           });
         });
+        new import_obsidian3.Setting(containerEl).setDesc("Forgot your password?").addButton(
+          (btn) => btn.setButtonText("Reset password").onClick(() => {
+            const base = this.plugin.settings.serverUrl.replace(/\/+$/, "");
+            if (!base) {
+              new import_obsidian3.Notice("Set the server URL first.");
+              return;
+            }
+            window.open(`${base}/forgot-password`);
+          })
+        );
       }
     }
     new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
