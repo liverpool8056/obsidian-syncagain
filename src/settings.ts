@@ -558,6 +558,7 @@ export class SyncAgainSettingTab extends PluginSettingTab {
             "this vault on a new device. Edit it here only if you are entering a key from " +
             "another device.",
           )
+          .setClass("syncagain-secret-key-setting")
           .addText((text) => {
             text.inputEl.type = "password";
             text

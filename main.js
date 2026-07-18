@@ -507,7 +507,7 @@ var SyncAgainSettingTab = class extends import_obsidian3.PluginSettingTab {
         let secretKeyInput = null;
         const secretKeySetting = new import_obsidian3.Setting(containerEl).setName("Secret key").setDesc(
           "The 16-character key used to derive the encryption key. Required to unlock this vault on a new device. Edit it here only if you are entering a key from another device."
-        ).addText((text) => {
+        ).setClass("syncagain-secret-key-setting").addText((text) => {
           text.inputEl.type = "password";
           text.setPlaceholder("xxxx-xxxx-xxxx-xxxx").setValue(this.plugin.settings.encryptionSecretKey).onChange(async (value) => {
             this.plugin.settings.encryptionSecretKey = value;

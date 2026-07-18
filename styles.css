@@ -31,6 +31,26 @@
   margin-left: 6px;
 }
 
+/*
+ * Secret-key setting: the control holds a text input plus Show/Copy buttons,
+ * which is too wide to sit beside the description without squeezing it into a
+ * one-character-per-line column. Stack the control below the description and
+ * let the input take the remaining width.
+ */
+.syncagain-secret-key-setting {
+  display: block;
+}
+
+.syncagain-secret-key-setting .setting-item-control {
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.syncagain-secret-key-setting .setting-item-control input {
+  flex: 1;
+}
+
 .syncagain-secret-key-display {
   font-size: 1.25em;
   padding: 12px;

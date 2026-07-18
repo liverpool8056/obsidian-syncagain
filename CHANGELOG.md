@@ -3,6 +3,7 @@
 - [Table of Contents](#table-of-contents)
   - [1.0.0](#100)
   - [1.1.0](#110)
+  - [1.1.1](#111)
 
 ## [1.0.0]
 
@@ -21,5 +22,13 @@ First version released. Bidirectional vault sync plugin with upload, download, a
 2. Support "Forgot Password" 
 3. Support a checkbox to **forget** cached account data when logging out
 
+## [1.1.1]
+
+> Release date: 2026/07/18
+
+### Summary
+1. Fix an issue where "Secret key" setting was squeezed in its description
+
 [1.0.0]: https://github.com/liverpool8056/obsidian-syncagain/commits/b904b66...1.0.0
 [1.1.0]: https://github.com/liverpool8056/obsidian-syncagain/commits/1.0.0...1.1.0
+[1.1.1]: https://github.com/liverpool8056/obsidian-syncagain/commits/1.1.0...1.1.1
